@@ -1,7 +1,3 @@
-// PASTE YOUR FIREBASE CONFIG HERE
-// Replace everything inside the firebaseConfig object with your own values
-// from the Firebase console (Project Settings > Your apps > SDK setup)
-
 const firebaseConfig = {
     apiKey: "AIzaSyCoZu2A7Svq17lAMRArGShlkGoCjT1LzMA",
     authDomain: "mo-mint.firebaseapp.com",
