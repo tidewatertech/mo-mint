@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="MO-Mint">
+  <title>MO-Mint</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="firebase-config.js"></script>
+  <style>
+    :root {
+      --indigo-50: #EEEDFE;
+      --indigo-200: #AFA9EC;
+      --indigo-400: #7F77DD;
+      --indigo-600: #534AB7;
+      --indigo-800: #3C3489;
+      --indigo-900: #26215C;
+      --teal-50: #E1F5EE;
+      --teal-200: #5DCAA5;
+      --teal-400: #1D9E75;
+      --teal-600: #0F6E56;
+      --teal-800: #085041;
+      --red-400: #E24B4A;
+      --red-50: #FCEBEB;
+      --amber-400: #BA7517;
+      --amber-50: #FAEEDA;
+      --bg: #0f0f13;
+      --bg-surface: #17171e;
+      --bg-card: #1e1e28;
+      --bg-input: #25252f;
+      --border: rgba(255,255,255,0.08);
+      --border-focus: rgba(127,119,221,0.5);
+      --text-primary: #f0f0f5;
+      --text-secondary: #9898b0;
+      --text-tertiary: #5a5a72;
+      --font: 'Inter', sans-serif;
+    }
+    [data-theme="light"] {
+      --bg: #f4f4f8;
+      --bg-surface: #ffffff;
+      --bg-card: #ffffff;
+      --bg-input: #f0f0f5;
+      --border: rgba(0,0,0,0.09);
+      --border-focus: rgba(83,74,183,0.4);
+      --text-primary: #1a1a2e;
+      --text-secondary: #5a5a72;
+      --text-tertiary: #9898b0;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; font-family: var(--font); background: var(--bg); color: var(--text-primary); font-size: 14px; }
+    #app { display: flex; height: 100vh; overflow: hidden; }
+
+    /* Sidebar */
+    .sidebar { width: 220px; background: var(--bg-surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
+    .sidebar-header { padding: 1.25rem 1rem; border-bottom: 1px solid var(--border); }
+    .logo { font-size: 18px; font-weight: 600; color: var(--indigo-400); display: flex; align-items: center; gap: 8px; }
+    .logo i { font-size: 20px; }
+    .logo-sub { font-size: 10px; color: var(--text-tertiary); font-weight: 400; margin-top: 1px; }
+    .nav { padding: 0.75rem 0; flex: 1; }
+    .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 1rem; font-size: 13px; color: var(--text-secondary); cursor: pointer; transition: all 0.15s; border-left: 2px solid transparent; }
+    .nav-item:hover { color: var(--text-primary); background: rgba(127,119,221,0.06); }
+    .nav-item.active { color: var(--indigo-400); background: rgba(127,119,221,0.1); border-left-color: var(--indigo-600); font-weight: 500; }
+    .nav-item i { font-size: 17px; }
+    .sidebar-footer { padding: 0.75rem; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+    .theme-toggle { background: var(--bg-input); border: 1px solid var(--border); border-radius: 20px; padding: 5px 10px; cursor: pointer; font-size: 12px; color: var(--text-secondary); display: flex; align-items: center; gap: 5px; }
+    .theme-toggle:hover { color: var(--text-primary); }
+
+    /* Main content */
+    .main { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+    .topbar { padding: 1rem 1.5rem; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; background: var(--bg-surface); position: sticky; top: 0; z-index: 10; }
+    .topbar-left { display: flex; align-items: center; gap: 12px; }
+    .page-title { font-size: 16px; font-weight: 600; }
+    .month-nav { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-secondary); }
+    .month-nav button { background: none; border: 1px solid var(--border); border-radius: 6px; width: 28px; height: 28px; cursor: pointer; color: var(--text-secondary); display: flex; align-items: center; justify-content: center; }
+    .month-nav button:hover { color: var(--text-primary); border-color: var(--border-focus); }
+    .month-label { font-weight: 500; color: var(--text-primary); min-width: 100px; text-align: center; font-size: 13px; }
+    .add-btn { background: var(--indigo-600); color: white; border: none; border-radius: 8px; padding: 7px 14px; font-size: 13px; font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 6px; font-family: var(--font); }
+    .add-btn:hover { background: var(--indigo-800); }
+
+    /* Content area */
+    .content { padding: 1.5rem; flex: 1; }
+
+    /* Metric cards */
+    .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 1.5rem; }
+    .metric-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1rem 1.25rem; }
+    .metric-label { font-size: 11px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+    .metric-value { font-size: 22px; font-weight: 600; }
+    .metric-value.positive { color: var(--teal-400); }
+    .metric-value.negative { color: var(--red-400); }
+    .metric-value.indigo { color: var(--indigo-400); }
+    .metric-sub { font-size: 11px; color: var(--text-tertiary); margin-top: 4px; }
+
+    /* Cards */
+    .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; }
+    .card-title { font-size: 11px; font-weight: 500; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 1rem; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; margin-bottom: 1.25rem; }
+    .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1.25rem; margin-bottom: 1.25rem; }
+
+    /* Spending ring */
+    .ring-wrap { display: flex; align-items: center; gap: 1.5rem; }
+    .ring-legend { flex: 1; display: flex; flex-direction: column; gap: 9px; }
+    .legend-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+    .legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .legend-name { flex: 1; color: var(--text-secondary); }
+    .legend-amt { font-weight: 500; color: var(--text-primary); }
+    .legend-pct { color: var(--text-tertiary); font-size: 11px; min-width: 30px; text-align: right; }
+
+    /* Transactions */
+    .txn-list { display: flex; flex-direction: column; }
+    .txn-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+    .txn-row:last-child { border-bottom: none; }
+    .txn-icon { width: 34px; height: 34px; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 15px; flex-shrink: 0; }
+    .txn-info { flex: 1; min-width: 0; }
+    .txn-name { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .txn-meta { font-size: 11px; color: var(--text-tertiary); margin-top: 1px; }
+    .txn-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+    .txn-amount { font-size: 13px; font-weight: 600; }
+    .txn-amount.out { color: var(--text-primary); }
+    .txn-amount.in { color: var(--teal-400); }
+    .txn-actions { display: flex; gap: 4px; opacity: 0; transition: opacity 0.15s; }
+    .txn-row:hover .txn-actions { opacity: 1; }
+    .icon-btn { background: none; border: 1px solid var(--border); border-radius: 6px; width: 26px; height: 26px; cursor: pointer; color: var(--text-tertiary); display: flex; align-items: center; justify-content: center; font-size: 13px; }
+    .icon-btn:hover { color: var(--text-primary); border-color: var(--border-focus); }
+    .icon-btn.danger:hover { color: var(--red-400); border-color: var(--red-400); }
+
+    /* Accounts */
+    .account-group { margin-bottom: 1.5rem; }
+    .account-group-title { font-size: 11px; font-weight: 500; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border); }
+    .account-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; background: var(--bg-input); border-radius: 8px; margin-bottom: 6px; }
+    .account-left { flex: 1; }
+    .account-name { font-size: 13px; font-weight: 500; }
+    .account-type { font-size: 11px; color: var(--text-tertiary); margin-top: 1px; }
+    .account-right { display: flex; align-items: center; gap: 10px; }
+    .account-bal { font-size: 14px; font-weight: 600; }
+    .account-bal.asset { color: var(--teal-400); }
+    .account-bal.liability { color: var(--red-400); }
+    .account-bal.neutral { color: var(--text-secondary); }
+
+    /* Net worth bar */
+    .nw-summary { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 6px; }
+    .nw-track { height: 8px; background: var(--bg-input); border-radius: 4px; overflow: hidden; display: flex; margin-bottom: 8px; }
+    .nw-assets-fill { background: var(--teal-400); border-radius: 4px 0 0 4px; }
+    .nw-liabilities-fill { background: var(--red-400); border-radius: 0 4px 4px 0; }
+    .nw-labels { display: flex; justify-content: space-between; font-size: 11px; }
+
+    /* Budget progress */
+    .budget-item { margin-bottom: 14px; }
+    .budget-header { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 5px; }
+    .budget-name { color: var(--text-secondary); }
+    .budget-amounts { color: var(--text-tertiary); }
+    .budget-track { height: 6px; background: var(--bg-input); border-radius: 3px; overflow: hidden; }
+    .budget-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
+
+    /* Modal */
+    .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; z-index: 100; padding: 1rem; }
+    .modal { background: var(--bg-card); border: 1px solid var(--border); border-radius: 16px; padding: 1.5rem; width: 100%; max-width: 440px; max-height: 90vh; overflow-y: auto; }
+    .modal-title { font-size: 16px; font-weight: 600; margin-bottom: 1.25rem; }
+    .modal-footer { display: flex; gap: 8px; justify-content: flex-end; margin-top: 1.5rem; }
+    .form-group { margin-bottom: 1rem; }
+    .form-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 5px; display: block; font-weight: 500; }
+    .form-input, .form-select { width: 100%; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; font-size: 13px; color: var(--text-primary); font-family: var(--font); outline: none; }
+    .form-input:focus, .form-select:focus { border-color: var(--border-focus); }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .toggle-row { display: flex; gap: 6px; }
+    .toggle-btn { flex: 1; padding: 8px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--text-secondary); font-family: var(--font); text-align: center; }
+    .toggle-btn.active-in { background: rgba(29,158,117,0.15); border-color: var(--teal-400); color: var(--teal-400); font-weight: 500; }
+    .toggle-btn.active-out { background: rgba(226,75,74,0.12); border-color: var(--red-400); color: var(--red-400); font-weight: 500; }
+    .btn { padding: 9px 18px; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; border: none; font-family: var(--font); }
+    .btn-primary { background: var(--indigo-600); color: white; }
+    .btn-primary:hover { background: var(--indigo-800); }
+    .btn-ghost { background: var(--bg-input); color: var(--text-secondary); border: 1px solid var(--border); }
+    .btn-ghost:hover { color: var(--text-primary); }
+    .btn-danger { background: rgba(226,75,74,0.15); color: var(--red-400); border: 1px solid rgba(226,75,74,0.3); }
+
+    /* Empty state */
+    .empty-state { text-align: center; padding: 3rem 1rem; color: var(--text-tertiary); }
+    .empty-state i { font-size: 40px; margin-bottom: 12px; display: block; }
+    .empty-state p { font-size: 13px; }
+
+    /* Loading */
+    .loading { display: flex; align-items: center; justify-content: center; height: 200px; color: var(--text-tertiary); gap: 10px; font-size: 13px; }
+
+    /* Toast */
+    .toast { position: fixed; bottom: 1.5rem; right: 1.5rem; background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 12px 16px; font-size: 13px; z-index: 200; transform: translateY(100px); opacity: 0; transition: all 0.25s; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+    .toast.show { transform: translateY(0); opacity: 1; }
+    .toast.success { border-left: 3px solid var(--teal-400); }
+    .toast.error { border-left: 3px solid var(--red-400); }
+
+    /* Mobile nav */
+    .mobile-nav { display: none; position: fixed; bottom: 0; left: 0; right: 0; background: var(--bg-surface); border-top: 1px solid var(--border); z-index: 50; padding: 8px 0 env(safe-area-inset-bottom); }
+    .mobile-nav-items { display: flex; justify-content: space-around; }
+    .mobile-nav-item { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 12px; cursor: pointer; color: var(--text-tertiary); font-size: 10px; }
+    .mobile-nav-item.active { color: var(--indigo-400); }
+    .mobile-nav-item i { font-size: 22px; }
+
+    /* Page sections */
+    .page { display: none; }
+    .page.active { display: block; }
+
+    /* Chart container */
+    .chart-wrap { position: relative; width: 100%; height: 180px; }
+
+    @media (max-width: 768px) {
+      .sidebar { display: none; }
+      .mobile-nav { display: block; }
+      .main { padding-bottom: 70px; }
+      .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .two-col { grid-template-columns: 1fr; }
+      .three-col { grid-template-columns: 1fr; }
+      .content { padding: 1rem; }
+      .topbar { padding: 0.875rem 1rem; }
+    }
+  </style>
+</head>
+<body>
+<!-- Login screen -->
+<div id="login-screen" style="display:none;position:fixed;inset:0;background:var(--bg);z-index:999;display:flex;align-items:center;justify-content:center;">
+  <div style="text-align:center;padding:2rem;">
+    <div style="font-size:48px;margin-bottom:0.5rem;">🌿</div>
+    <div style="font-size:28px;font-weight:600;color:var(--indigo-400);margin-bottom:4px;">MO-Mint</div>
+    <div style="font-size:13px;color:var(--text-tertiary);margin-bottom:2.5rem;">Personal Finance</div>
+    <button id="google-signin-btn" onclick="signInWithGoogle()" style="display:flex;align-items:center;gap:12px;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:14px 24px;font-size:14px;font-weight:500;color:var(--text-primary);cursor:pointer;font-family:var(--font);margin:0 auto;">
+      <svg width="20" height="20" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+      Sign in with Google
+    </button>
+    <div id="login-error" style="margin-top:1rem;font-size:12px;color:var(--red-400);display:none;"></div>
+  </div>
+</div>
+
+<div id="app" style="display:none;">
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <div class="logo"><i class="ti ti-leaf"></i> MO-Mint</div>
+      <div class="logo-sub">Personal Finance</div>
+    </div>
+    <nav class="nav">
+      <div class="nav-item active" data-page="dashboard"><i class="ti ti-layout-dashboard"></i> Overview</div>
+      <div class="nav-item" data-page="transactions"><i class="ti ti-arrows-exchange"></i> Transactions</div>
+      <div class="nav-item" data-page="budgets"><i class="ti ti-chart-pie"></i> Budgets</div>
+      <div class="nav-item" data-page="accounts"><i class="ti ti-building-bank"></i> Accounts</div>
+      <div class="nav-item" data-page="networth"><i class="ti ti-trending-up"></i> Net worth</div>
+    </nav>
+    <div class="sidebar-footer">
+      <button class="theme-toggle" onclick="toggleTheme()"><i class="ti ti-sun"></i> <span id="theme-label">Light</span></button>
+      <button class="theme-toggle" onclick="signOutUser()" title="Sign out"><i class="ti ti-logout"></i></button>
+    </div>
+  </aside>
+
+  <div class="main" id="main-content">
+    <div class="topbar">
+      <div class="topbar-left">
+        <span class="page-title" id="page-title">Overview</span>
+        <div class="month-nav" id="month-nav">
+          <button onclick="changeMonth(-1)"><i class="ti ti-chevron-left"></i></button>
+          <span class="month-label" id="month-label">Loading...</span>
+          <button onclick="changeMonth(1)"><i class="ti ti-chevron-right"></i></button>
+        </div>
+      </div>
+      <button class="add-btn" onclick="openAddTransaction()"><i class="ti ti-plus"></i> Add transaction</button>
+    </div>
+
+    <div class="content">
+      <!-- Dashboard -->
+      <div class="page active" id="page-dashboard">
+        <div class="metric-grid" id="dashboard-metrics">
+          <div class="metric-card"><div class="metric-label">Money in</div><div class="metric-value positive" id="m-in">$0</div><div class="metric-sub" id="m-in-sub">this month</div></div>
+          <div class="metric-card"><div class="metric-label">Money out</div><div class="metric-value negative" id="m-out">$0</div><div class="metric-sub" id="m-out-sub">this month</div></div>
+          <div class="metric-card"><div class="metric-label">Net this month</div><div class="metric-value" id="m-net">$0</div><div class="metric-sub" id="m-savings-rate"></div></div>
+          <div class="metric-card"><div class="metric-label">Net worth</div><div class="metric-value indigo" id="m-networth">$0</div><div class="metric-sub" id="m-nw-change"></div></div>
+        </div>
+        <div class="two-col">
+          <div class="card">
+            <div class="card-title">Spending breakdown</div>
+            <div class="ring-wrap">
+              <svg id="spending-ring" width="120" height="120" viewBox="0 0 120 120"></svg>
+              <div class="ring-legend" id="ring-legend"></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">Month over month</div>
+            <div class="chart-wrap"><canvas id="mo-chart" role="img" aria-label="Month over month income vs spending bar chart"></canvas></div>
+          </div>
+        </div>
+        <div class="card">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+            <div class="card-title" style="margin-bottom:0;">Recent transactions</div>
+            <span style="font-size:12px;color:var(--indigo-400);cursor:pointer;" onclick="switchPage('transactions')">View all</span>
+          </div>
+          <div class="txn-list" id="recent-txns"></div>
+        </div>
+      </div>
+
+      <!-- Transactions -->
+      <div class="page" id="page-transactions">
+        <div style="display:flex;gap:8px;margin-bottom:1rem;flex-wrap:wrap;">
+          <select class="form-select" style="width:auto;min-width:140px;" id="filter-category" onchange="renderTransactions()">
+            <option value="">All categories</option>
+          </select>
+          <select class="form-select" style="width:auto;min-width:140px;" id="filter-account" onchange="renderTransactions()">
+            <option value="">All accounts</option>
+          </select>
+          <select class="form-select" style="width:auto;" id="filter-type" onchange="renderTransactions()">
+            <option value="">In & out</option>
+            <option value="in">Money in</option>
+            <option value="out">Money out</option>
+          </select>
+        </div>
+        <div class="card">
+          <div class="txn-list" id="all-txns"></div>
+        </div>
+      </div>
+
+      <!-- Budgets -->
+      <div class="page" id="page-budgets">
+        <div class="two-col">
+          <div class="card">
+            <div class="card-title">Spending vs budget</div>
+            <div id="budget-bars"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">Set monthly budgets</div>
+            <div id="budget-form-list"></div>
+            <button class="btn btn-primary" style="margin-top:1rem;width:100%;" onclick="saveBudgets()">Save budgets</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Accounts -->
+      <div class="page" id="page-accounts">
+        <div style="display:flex;justify-content:flex-end;margin-bottom:1rem;">
+          <button class="add-btn" onclick="openAddAccount()"><i class="ti ti-plus"></i> Add account</button>
+        </div>
+        <div id="accounts-list"></div>
+      </div>
+
+      <!-- Net worth -->
+      <div class="page" id="page-networth">
+        <div class="metric-grid" style="grid-template-columns:repeat(3,minmax(0,1fr));">
+          <div class="metric-card"><div class="metric-label">Total assets</div><div class="metric-value positive" id="nw-assets">$0</div></div>
+          <div class="metric-card"><div class="metric-label">Total liabilities</div><div class="metric-value negative" id="nw-liabilities">$0</div></div>
+          <div class="metric-card"><div class="metric-label">Net worth</div><div class="metric-value indigo" id="nw-total">$0</div></div>
+        </div>
+        <div class="card" style="margin-bottom:1.25rem;">
+          <div class="card-title">Assets vs liabilities</div>
+          <div class="nw-summary">
+            <span style="color:var(--teal-400);">Assets</span>
+            <span style="color:var(--red-400);">Liabilities</span>
+          </div>
+          <div class="nw-track">
+            <div class="nw-assets-fill" id="nw-bar-assets" style="width:50%;"></div>
+            <div class="nw-liabilities-fill" id="nw-bar-liabilities" style="width:50%;"></div>
+          </div>
+          <div class="nw-labels">
+            <span id="nw-label-assets" style="color:var(--teal-400);">$0</span>
+            <span id="nw-label-liabilities" style="color:var(--red-400);">$0</span>
+          </div>
+        </div>
+        <div class="two-col">
+          <div class="card">
+            <div class="card-title">Assets breakdown</div>
+            <div id="nw-assets-list"></div>
+          </div>
+          <div class="card">
+            <div class="card-title">Liabilities breakdown</div>
+            <div id="nw-liabilities-list"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <nav class="mobile-nav">
+    <div class="mobile-nav-items">
+      <div class="mobile-nav-item active" data-page="dashboard"><i class="ti ti-layout-dashboard"></i>Overview</div>
+      <div class="mobile-nav-item" data-page="transactions"><i class="ti ti-arrows-exchange"></i>Transactions</div>
+      <div class="mobile-nav-item" data-page="budgets"><i class="ti ti-chart-pie"></i>Budgets</div>
+      <div class="mobile-nav-item" data-page="accounts"><i class="ti ti-building-bank"></i>Accounts</div>
+      <div class="mobile-nav-item" data-page="networth"><i class="ti ti-trending-up"></i>Net worth</div>
+    </div>
+  </nav>
+</div>
+
+<!-- Add/Edit Transaction Modal -->
+<div class="modal-overlay" id="txn-modal" style="display:none;" onclick="closeModal(event,'txn-modal')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-title" id="txn-modal-title">Add transaction</div>
+    <div class="form-group">
+      <label class="form-label">Type</label>
+      <div class="toggle-row">
+        <button class="toggle-btn active-out" id="toggle-out" onclick="setType('out')">Money out</button>
+        <button class="toggle-btn" id="toggle-in" onclick="setType('in')">Money in</button>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Date</label>
+        <input class="form-input" type="date" id="txn-date">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Amount ($)</label>
+        <input class="form-input" type="number" step="0.01" min="0" id="txn-amount" placeholder="0.00">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Payee / description</label>
+      <input class="form-input" type="text" id="txn-payee" placeholder="e.g. Thrifty Foods">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Category</label>
+        <select class="form-select" id="txn-category"></select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Account</label>
+        <select class="form-select" id="txn-account"></select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Notes (optional)</label>
+      <input class="form-input" type="text" id="txn-notes" placeholder="">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="document.getElementById('txn-modal').style.display='none'">Cancel</button>
+      <button class="btn btn-primary" onclick="saveTransaction()" id="txn-save-btn">Add transaction</button>
+    </div>
+  </div>
+</div>
+
+<!-- Recategorize Modal -->
+<div class="modal-overlay" id="recat-modal" style="display:none;" onclick="closeModal(event,'recat-modal')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-title">Recategorize transaction</div>
+    <div class="form-group">
+      <label class="form-label">Payee</label>
+      <div style="font-size:14px;font-weight:500;padding:8px 0;" id="recat-payee"></div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Category</label>
+      <select class="form-select" id="recat-category"></select>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="document.getElementById('recat-modal').style.display='none'">Cancel</button>
+      <button class="btn btn-primary" onclick="saveRecat()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Add Account Modal -->
+<div class="modal-overlay" id="account-modal" style="display:none;" onclick="closeModal(event,'account-modal')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-title" id="account-modal-title">Add account</div>
+    <div class="form-group">
+      <label class="form-label">Institution & account name</label>
+      <input class="form-input" type="text" id="acc-name" placeholder="e.g. EQ Bank — Notice Savings">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Account type</label>
+        <select class="form-select" id="acc-type">
+          <option value="chequing">Chequing</option>
+          <option value="savings">Savings</option>
+          <option value="hisa">HISA</option>
+          <option value="rrsp">RRSP</option>
+          <option value="rrsp-gic">RRSP GIC</option>
+          <option value="rrsp-locked">Locked-in RRSP</option>
+          <option value="fhsa">FHSA</option>
+          <option value="resp">RESP</option>
+          <option value="pension">Pension</option>
+          <option value="investment">Investment</option>
+          <option value="loc">Line of credit</option>
+          <option value="credit-card">Credit card</option>
+          <option value="other">Other</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Group</label>
+        <select class="form-select" id="acc-group">
+          <option value="liquid">Liquid assets</option>
+          <option value="registered">Registered investments</option>
+          <option value="loc">Lines of credit</option>
+          <option value="credit-card">Credit cards</option>
+          <option value="other-asset">Other assets</option>
+          <option value="other-liability">Other liabilities</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Current balance ($)</label>
+        <input class="form-input" type="number" step="0.01" id="acc-balance" placeholder="0.00">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Interest rate (optional)</label>
+        <input class="form-input" type="text" id="acc-rate" placeholder="e.g. 8.94%">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Notes (optional)</label>
+      <input class="form-input" type="text" id="acc-notes" placeholder="e.g. Auto-debit on 6th">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="document.getElementById('account-modal').style.display='none'">Cancel</button>
+      <button class="btn btn-primary" onclick="saveAccount()" id="acc-save-btn">Add account</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Balance Modal -->
+<div class="modal-overlay" id="balance-modal" style="display:none;" onclick="closeModal(event,'balance-modal')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-title">Update balance</div>
+    <div style="font-size:14px;font-weight:500;margin-bottom:1rem;" id="bal-account-name"></div>
+    <div class="form-group">
+      <label class="form-label">Current balance ($)</label>
+      <input class="form-input" type="number" step="0.01" id="bal-amount" placeholder="0.00">
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="document.getElementById('balance-modal').style.display='none'">Cancel</button>
+      <button class="btn btn-primary" onclick="saveBalance()">Update</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+</div><!-- end #app -->
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
