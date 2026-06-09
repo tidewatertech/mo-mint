@@ -1,4 +1,4 @@
-const firebaseConfig = {
+window.firebaseConfig = {
     apiKey: "AIzaSyCoZu2A7Svq17lAMRArGShlkGoCjT1LzMA",
     authDomain: "mo-mint.firebaseapp.com",
     projectId: "mo-mint",
