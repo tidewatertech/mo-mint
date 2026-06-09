@@ -297,7 +297,7 @@
 
       <!-- Transactions -->
       <div class="page" id="page-transactions">
-        <div style="display:flex;gap:8px;margin-bottom:1rem;flex-wrap:wrap;">
+        <div style="display:flex;gap:8px;margin-bottom:1rem;flex-wrap:wrap;align-items:center;">
           <select class="form-select" style="width:auto;min-width:140px;" id="filter-category" onchange="renderTransactions()">
             <option value="">All categories</option>
           </select>
@@ -309,6 +309,7 @@
             <option value="in">Money in</option>
             <option value="out">Money out</option>
           </select>
+          <label class="add-btn" style="cursor:pointer;margin-left:auto;"><i class="ti ti-upload"></i> Import CSV<input type="file" accept=".csv" style="display:none;" onchange="importTransactionsCSV(event)"></label>
         </div>
         <div class="card">
           <div class="txn-list" id="all-txns"></div>
@@ -332,7 +333,8 @@
 
       <!-- Accounts -->
       <div class="page" id="page-accounts">
-        <div style="display:flex;justify-content:flex-end;margin-bottom:1rem;">
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-bottom:1rem;">
+          <label class="add-btn" style="cursor:pointer;"><i class="ti ti-upload"></i> Import CSV<input type="file" accept=".csv" style="display:none;" onchange="importAccountsCSV(event)"></label>
           <button class="add-btn" onclick="openAddAccount()"><i class="ti ti-plus"></i> Add account</button>
         </div>
         <div id="accounts-list"></div>

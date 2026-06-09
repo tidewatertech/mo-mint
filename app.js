@@ -576,6 +576,73 @@ function renderNetworth() {
   document.getElementById('nw-liabilities-list').innerHTML = groupedList(accounts.filter(a =>  a.isLiability), ['loc','credit-card','other-liability']);
 }
 
+// ── CSV Import ─────────────────────────────────────────────────────────────
+function parseCSV(text) {
+  const lines = text.trim().split('\n');
+  const headers = lines[0].split(',').map(h => h.trim());
+  return lines.slice(1).map(line => {
+    const values = line.split(',');
+    const obj = {};
+    headers.forEach((h, i) => { obj[h] = (values[i] || '').trim(); });
+    return obj;
+  });
+}
+
+async function importAccountsCSV(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const text = await file.text();
+  const rows = parseCSV(text);
+  let count = 0;
+  for (const row of rows) {
+    if (!row.name) continue;
+    const data = {
+      name:        row.name,
+      type:        row.type        || 'other',
+      group:       row.group       || 'liquid',
+      balance:     parseFloat(row.balance) || 0,
+      rate:        row.rate        || '',
+      notes:       row.notes       || '',
+      isLiability: row.isLiability === 'true'
+    };
+    const ref = await addDoc(userCol('accounts'), data);
+    accounts.push({ id: ref.id, ...data });
+    count++;
+  }
+  event.target.value = '';
+  showToast(`${count} accounts imported`);
+  renderAccounts();
+  renderDashboard();
+}
+
+async function importTransactionsCSV(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const text = await file.text();
+  const rows = parseCSV(text);
+  let count = 0;
+  for (const row of rows) {
+    if (!row.date || !row.payee || !row.amount) continue;
+    const data = {
+      date:     row.date,
+      payee:    row.payee,
+      category: row.category || 'other',
+      type:     row.type     || 'out',
+      amount:   parseFloat(row.amount) || 0,
+      account:  row.account  || '',
+      notes:    row.notes    || ''
+    };
+    const ref = await addDoc(userCol('transactions'), data);
+    transactions.unshift({ id: ref.id, ...data });
+    count++;
+  }
+  transactions.sort((a, b) => b.date.localeCompare(a.date));
+  event.target.value = '';
+  showToast(`${count} transactions imported`);
+  renderTransactions();
+  renderDashboard();
+}
+
 // ── Modal helpers ──────────────────────────────────────────────────────────
 function closeModal(event, id) {
   if (event.target.classList.contains('modal-overlay')) document.getElementById(id).style.display = 'none';
@@ -595,6 +662,8 @@ async function signInWithGoogle() {
 function signOutUser() { signOut(auth); }
 
 // ── Expose globals ─────────────────────────────────────────────────────────
+window.importAccountsCSV     = importAccountsCSV;
+window.importTransactionsCSV = importTransactionsCSV;
 window.toggleTheme        = toggleTheme;
 window.changeMonth        = changeMonth;
 window.switchPage         = switchPage;
