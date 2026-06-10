@@ -147,7 +147,17 @@ function getMonthTxns(m, y) {
   });
 }
 
+function renderGreeting() {
+  const el = document.getElementById('greeting');
+  if (!el || !currentUser) return;
+  const name = currentUser.displayName ? currentUser.displayName.split(' ')[0] : '';
+  const hour = new Date().getHours();
+  const time = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+  el.textContent = name ? `${time}, ${name}.` : `${time}.`;
+}
+
 function renderDashboard() {
+  renderGreeting();
   updateMonthLabel();
   const txns     = getMonthTxns(currentMonth, currentYear);
   const income   = txns.filter(t => t.type === 'in').reduce((s, t) => s + t.amount, 0);

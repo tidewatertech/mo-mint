@@ -265,11 +265,13 @@
         </div>
       </div>
       <button class="add-btn" onclick="openAddTransaction()"><i class="ti ti-plus"></i> Add transaction</button>
+      <button class="theme-toggle" onclick="toggleTheme()" style="margin-left:8px;"><i class="ti ti-sun" id="topbar-theme-icon"></i></button>
     </div>
 
     <div class="content">
       <!-- Dashboard -->
       <div class="page active" id="page-dashboard">
+        <div id="greeting" style="font-size:15px;font-weight:500;color:var(--text-secondary);margin-bottom:1rem;"></div>
         <div class="metric-grid" id="dashboard-metrics">
           <div class="metric-card"><div class="metric-label">Money in</div><div class="metric-value positive" id="m-in">$0</div><div class="metric-sub" id="m-in-sub">this month</div></div>
           <div class="metric-card"><div class="metric-label">Money out</div><div class="metric-value negative" id="m-out">$0</div><div class="metric-sub" id="m-out-sub">this month</div></div>
@@ -346,8 +348,8 @@
       <!-- Net worth -->
       <div class="page" id="page-networth">
         <div class="metric-grid" style="grid-template-columns:repeat(3,minmax(0,1fr));">
-          <div class="metric-card"><div class="metric-label">Total assets</div><div class="metric-value positive" id="nw-assets">$0</div></div>
-          <div class="metric-card"><div class="metric-label">Total liabilities</div><div class="metric-value negative" id="nw-liabilities">$0</div></div>
+          <div class="metric-card"><div class="metric-label">Assets</div><div class="metric-value positive" id="nw-assets">$0</div></div>
+          <div class="metric-card"><div class="metric-label">Liabilities</div><div class="metric-value negative" id="nw-liabilities">$0</div></div>
           <div class="metric-card"><div class="metric-label">Net worth</div><div class="metric-value indigo" id="nw-total">$0</div></div>
         </div>
         <div class="card" style="margin-bottom:1.25rem;">
