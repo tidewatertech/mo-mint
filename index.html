@@ -186,6 +186,11 @@
     .icon-btn.reorder { padding: 0; width: 22px; height: 15px; border: none; opacity: .55; }
     .icon-btn.reorder:hover { opacity: 1; border: none; }
     .icon-btn[disabled] { opacity: .2; cursor: default; pointer-events: none; }
+    .account-row.primary { border: 1px solid var(--indigo-600); background: rgba(127,119,221,0.08); }
+    .icon-btn.pin.active { color: var(--indigo-400); border-color: var(--indigo-400); }
+    .drag-handle { display: flex; align-items: center; padding-right: 8px; color: var(--text-tertiary); cursor: grab; touch-action: none; font-size: 16px; }
+    .drag-handle:active { cursor: grabbing; color: var(--indigo-400); }
+    .drag-ghost { opacity: .4; }
     .btn { padding: 9px 18px; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; border: none; font-family: var(--font); }
     .btn-primary { background: var(--indigo-600); color: white; }
     .btn-primary:hover { background: var(--indigo-800); }
@@ -259,10 +264,10 @@
     </div>
     <nav class="nav">
       <div class="nav-item active" data-page="dashboard"><i class="ti ti-layout-dashboard"></i> Overview</div>
+      <div class="nav-item" data-page="accounts"><i class="ti ti-building-bank"></i> Accounts</div>
       <div class="nav-item" data-page="transactions"><i class="ti ti-arrows-exchange"></i> Transactions</div>
       <div class="nav-item" data-page="budgets"><i class="ti ti-chart-pie"></i> Budgets</div>
       <div class="nav-item" data-page="forecast"><i class="ti ti-chart-line"></i> Forecast</div>
-      <div class="nav-item" data-page="accounts"><i class="ti ti-building-bank"></i> Accounts</div>
       <div class="nav-item" data-page="networth"><i class="ti ti-trending-up"></i> Net worth</div>
     </nav>
     <div class="sidebar-footer">
@@ -290,6 +295,7 @@
       <div class="page active" id="page-dashboard">
         <div id="greeting" style="font-size:15px;font-weight:500;color:var(--text-secondary);margin-bottom:1rem;"></div>
         <div class="metric-grid" id="dashboard-metrics">
+          <div class="metric-card"><div class="metric-label">Operating account</div><div class="metric-value indigo" id="m-operating">$0</div><div class="metric-sub" id="m-operating-label">not set</div></div>
           <div class="metric-card"><div class="metric-label">Money in</div><div class="metric-value positive" id="m-in">$0</div><div class="metric-sub" id="m-in-sub">this month</div></div>
           <div class="metric-card"><div class="metric-label">Money out</div><div class="metric-value negative" id="m-out">$0</div><div class="metric-sub" id="m-out-sub">this month</div></div>
           <div class="metric-card"><div class="metric-label">Net this month</div><div class="metric-value" id="m-net">$0</div><div class="metric-sub" id="m-savings-rate"></div></div>
@@ -371,6 +377,12 @@
             <button class="add-btn" onclick="exportProjectionCSV()"><i class="ti ti-download"></i> Export month CSV</button>
           </div>
         </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:1.25rem;font-size:12px;color:var(--text-secondary);flex-wrap:wrap;">
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+            <input type="checkbox" id="fc-include-budgets" onchange="toggleBudgetForecast()"> Include budgeted everyday spending in the projection, from
+          </label>
+          <select class="form-select" style="width:auto;display:none;" id="fc-budget-account" onchange="saveBudgetForecastAccount()"></select>
+        </div>
         <div class="metric-grid" id="fc-summary" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:1.25rem;"></div>
         <div class="card" style="margin-bottom:1.25rem;">
           <div class="card-title">Net worth &amp; debt projection</div>
@@ -446,10 +458,10 @@
   <nav class="mobile-nav">
     <div class="mobile-nav-items">
       <div class="mobile-nav-item active" data-page="dashboard"><i class="ti ti-layout-dashboard"></i>Overview</div>
+      <div class="mobile-nav-item" data-page="accounts"><i class="ti ti-building-bank"></i>Accounts</div>
       <div class="mobile-nav-item" data-page="transactions"><i class="ti ti-arrows-exchange"></i>Transactions</div>
       <div class="mobile-nav-item" data-page="budgets"><i class="ti ti-chart-pie"></i>Budgets</div>
       <div class="mobile-nav-item" data-page="forecast"><i class="ti ti-chart-line"></i>Forecast</div>
-      <div class="mobile-nav-item" data-page="accounts"><i class="ti ti-building-bank"></i>Accounts</div>
       <div class="mobile-nav-item" data-page="networth"><i class="ti ti-trending-up"></i>Net worth</div>
     </div>
   </nav>
@@ -617,6 +629,7 @@
           <option value="weekly">Weekly</option>
           <option value="biweekly">Every 2 weeks</option>
           <option value="monthly" selected>Monthly</option>
+          <option value="bimonthly">Every 2 months</option>
           <option value="quarterly">Quarterly</option>
           <option value="annual">Annually</option>
           <option value="once">One time</option>
@@ -683,6 +696,7 @@
 </div><!-- end #app -->
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.6/Sortable.min.js"></script>
 <script type="module" src="app.js"></script>
 </body>
 </html>

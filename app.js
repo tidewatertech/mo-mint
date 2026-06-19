@@ -18,6 +18,7 @@ let recurring = [];
 let milestones = [];
 let forecastHorizon = 12;
 let forecastChart = null;
+let forecastSettings = { includeBudgets: false, budgetAccount: '' };
 let editingTxnId = null;
 let editingRecurringId = null;
 let editingMilestoneId = null;
@@ -63,7 +64,7 @@ const SUGGESTED_BUDGETS = {
 
 const FREQ_LABELS = {
   weekly: 'Weekly', biweekly: 'Every 2 weeks', monthly: 'Monthly',
-  quarterly: 'Quarterly', annual: 'Annually', once: 'One time'
+  bimonthly: 'Every 2 months', quarterly: 'Quarterly', annual: 'Annually', once: 'One time'
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -139,7 +140,7 @@ function changeMonth(dir) {
 
 // ── Firebase data ──────────────────────────────────────────────────────────
 async function loadAll() {
-  await Promise.all([loadTransactions(), loadAccounts(), loadBudgets(), loadRecurring(), loadMilestones()]);
+  await Promise.all([loadTransactions(), loadAccounts(), loadBudgets(), loadRecurring(), loadMilestones(), loadForecastSettings()]);
   renderDashboard();
 }
 
@@ -182,6 +183,11 @@ async function loadRecurring() {
 async function loadMilestones() {
   const snap = await getDocs(userCol('milestones'));
   milestones = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+
+async function loadForecastSettings() {
+  const snap = await getDoc(userDocRef('settings/forecast'));
+  if (snap.exists()) forecastSettings = { includeBudgets: false, budgetAccount: '', ...snap.data() };
 }
 
 async function loadBudgets() {
@@ -234,6 +240,20 @@ function renderDashboard() {
   document.getElementById('m-in-sub').textContent  = prevIncome > 0 ? `${diffIn  >= 0 ? '+' : ''}${fmtShort(diffIn)} vs last month`  : 'this month';
   document.getElementById('m-out-sub').textContent = prevSpend  > 0 ? `${diffOut >= 0 ? '+' : ''}${fmtShort(diffOut)} vs last month` : 'this month';
   document.getElementById('m-networth').textContent = fmt(calcNetWorth());
+
+  const primary = accounts.find(a => a.isPrimary);
+  const opEl  = document.getElementById('m-operating');
+  const opSub = document.getElementById('m-operating-label');
+  if (primary) {
+    const b = accountBalance(primary);
+    opEl.textContent = primary.isLiability ? `-${fmt(b)}` : fmt(b);
+    opEl.className   = 'metric-value ' + (primary.isLiability ? 'negative' : 'positive');
+    opSub.textContent = primary.name;
+  } else {
+    opEl.textContent = '—';
+    opEl.className = 'metric-value';
+    opSub.textContent = 'Pin an account on Accounts';
+  }
 
   renderSpendingRing(txns);
   renderMoChart();
@@ -567,57 +587,92 @@ async function saveRecat() {
 // ── Accounts ───────────────────────────────────────────────────────────────
 function renderAccounts() {
   const el = document.getElementById('accounts-list');
-  const groups = {};
-  accounts.forEach(a => { if (!groups[a.group]) groups[a.group] = []; groups[a.group].push(a); });
-  const groupOrder = ['liquid','registered','loc','credit-card','other-asset','other-liability'];
   if (accounts.length === 0) {
     el.innerHTML = `<div class="empty-state"><i class="ti ti-building-bank"></i><p>No accounts yet. Run the seed file locally to populate your accounts, or add them manually.</p></div>`;
     return;
   }
-  el.innerHTML = groupOrder.filter(g => groups[g]).map(g => {
+  const primary = accounts.find(a => a.isPrimary);
+  const groups = {};
+  accounts.filter(a => !a.isPrimary).forEach(a => { if (!groups[a.group]) groups[a.group] = []; groups[a.group].push(a); });
+  const groupOrder = ['liquid','registered','loc','credit-card','other-asset','other-liability'];
+  let html = '';
+  if (primary) {
+    html += `<div class="account-group">
+      <div class="account-group-title">Operating account</div>
+      ${accountRowHTML(primary, true)}
+    </div>`;
+  }
+  html += groupOrder.filter(g => groups[g]).map(g => {
     const list = groups[g].slice().sort((a, b) => (a.sortOrder ?? 9999) - (b.sortOrder ?? 9999));
     return `<div class="account-group">
       <div class="account-group-title">${GROUP_LABELS[g]}</div>
-      ${list.map((a, i) => accountRowHTML(a, i === 0, i === list.length - 1)).join('')}
+      <div class="sortable-group" data-group="${g}">${list.map(a => accountRowHTML(a, false)).join('')}</div>
     </div>`;
   }).join('');
+  el.innerHTML = html;
+  initAccountSorting();
 }
 
-function accountRowHTML(a, isFirst, isLast) {
+function accountRowHTML(a, solo) {
   const bal      = accountBalance(a);
   const balClass = a.isLiability ? 'liability' : (bal === 0 ? 'neutral' : 'asset');
   const balStr   = a.isLiability ? `-${fmt(bal)}` : fmt(bal);
-  return `<div class="account-row">
-    <div class="account-reorder">
-      <button class="icon-btn reorder" ${isFirst ? 'disabled' : ''} onclick="moveAccount('${a.id}',-1)" title="Move up"><i class="ti ti-chevron-up"></i></button>
-      <button class="icon-btn reorder" ${isLast ? 'disabled' : ''} onclick="moveAccount('${a.id}',1)" title="Move down"><i class="ti ti-chevron-down"></i></button>
-    </div>
+  const handle   = solo ? '' : `<div class="drag-handle" title="Drag to reorder"><i class="ti ti-arrows-move"></i></div>`;
+  return `<div class="account-row${a.isPrimary ? ' primary' : ''}" data-id="${a.id}">
+    ${handle}
     <div class="account-left">
       <div class="account-name">${a.name}</div>
       <div class="account-type">${a.type.toUpperCase()}${a.rate ? ' · ' + a.rate : ''}${a.notes ? ' · ' + a.notes : ''}</div>
     </div>
     <div class="account-right">
       <div class="account-bal ${balClass}">${balStr}</div>
+      <button class="icon-btn pin${a.isPrimary ? ' active' : ''}" onclick="togglePrimary('${a.id}')" title="${a.isPrimary ? 'Pinned as operating account' : 'Pin as operating account'}"><i class="ti ti-pin"></i></button>
       <button class="icon-btn" onclick="openEditAccount('${a.id}')" title="Edit account"><i class="ti ti-pencil"></i></button>
       <button class="icon-btn danger" onclick="deleteAccount('${a.id}')" title="Delete"><i class="ti ti-trash"></i></button>
     </div>
   </div>`;
 }
 
-async function moveAccount(id, dir) {
-  const a = accounts.find(x => x.id === id);
-  if (!a) return;
-  const siblings = accounts.filter(x => x.group === a.group).sort((x, y) => (x.sortOrder ?? 9999) - (y.sortOrder ?? 9999));
-  const i = siblings.findIndex(x => x.id === id);
-  const j = i + dir;
-  if (j < 0 || j >= siblings.length) return;
-  const b = siblings[j];
-  const tmp = a.sortOrder; a.sortOrder = b.sortOrder; b.sortOrder = tmp;
+// Drag-to-reorder within each group (touch + desktop) via SortableJS. Reordering
+// is within-group only; to move an account to a different group, change its group
+// in the edit screen, since the group determines asset vs liability.
+let _sortables = [];
+function initAccountSorting() {
+  if (typeof Sortable === 'undefined') return; // library blocked; rows still display fine
+  _sortables.forEach(s => { try { s.destroy(); } catch (e) {} });
+  _sortables = [];
+  document.querySelectorAll('.sortable-group').forEach(container => {
+    _sortables.push(Sortable.create(container, {
+      handle: '.drag-handle',
+      animation: 150,
+      delay: 150,
+      delayOnTouchOnly: true,
+      ghostClass: 'drag-ghost',
+      onEnd: async (evt) => {
+        const ids = [...evt.to.querySelectorAll('[data-id]')].map(n => n.dataset.id);
+        const changed = [];
+        ids.forEach((id, i) => {
+          const a = accounts.find(x => x.id === id);
+          if (a && a.sortOrder !== i) { a.sortOrder = i; changed.push(a); }
+        });
+        await Promise.all(changed.map(a => updateDoc(doc(db, 'users', currentUser.uid, 'accounts', a.id), { sortOrder: a.sortOrder })));
+      }
+    }));
+  });
+}
+
+async function togglePrimary(id) {
+  const target = accounts.find(a => a.id === id);
+  if (!target) return;
+  const makePrimary = !target.isPrimary;
+  const changed = [];
+  accounts.forEach(a => {
+    const want = makePrimary && a.id === id;
+    if (!!a.isPrimary !== want) { a.isPrimary = want; changed.push(a); }
+  });
   renderAccounts();
-  await Promise.all([
-    updateDoc(doc(db, 'users', currentUser.uid, 'accounts', a.id), { sortOrder: a.sortOrder }),
-    updateDoc(doc(db, 'users', currentUser.uid, 'accounts', b.id), { sortOrder: b.sortOrder })
-  ]);
+  renderDashboard();
+  await Promise.all(changed.map(a => updateDoc(doc(db, 'users', currentUser.uid, 'accounts', a.id), { isPrimary: !!a.isPrimary })));
 }
 
 function openAddAccount() {
@@ -812,7 +867,7 @@ function buildOccurrences(rec, startStr, endStr) {
     while (d <= end) { push(new Date(d)); d.setDate(d.getDate() + step); }
     return occ;
   }
-  const monthStep = freq === 'monthly' ? 1 : freq === 'quarterly' ? 3 : 12;
+  const monthStep = freq === 'monthly' ? 1 : freq === 'bimonthly' ? 2 : freq === 'quarterly' ? 3 : 12;
   const day = anchor.getDate();
   let d = new Date(start.getFullYear(), start.getMonth(), 1, 12);
   while (d <= end) {
@@ -828,9 +883,33 @@ function buildOccurrences(rec, startStr, endStr) {
 
 function activeRecurring() { return recurring.filter(r => r.active !== false); }
 
+// Monthly lump outflows derived from budget categories that are NOT income,
+// savings, or debt, and are NOT already covered by a recurring entry. Applied
+// on the 1st of each FULL future month from the operating account, so the
+// forecast accounts for variable everyday spending without double-counting
+// scheduled items or the current partial month's actuals.
+function budgetSpendEvents(today, endStr) {
+  if (!forecastSettings.includeBudgets || !forecastSettings.budgetAccount) return [];
+  const covered = new Set(activeRecurring().filter(r => r.type === 'out' && r.category).map(r => r.category));
+  const skip = new Set(['income', 'savings', 'debt', 'transfer']);
+  const total = Object.keys(budgets).reduce((s, c) =>
+    (!skip.has(c) && !covered.has(c) && budgets[c] > 0) ? s + budgets[c] : s, 0);
+  if (total <= 0) return [];
+  const events = [];
+  const start = new Date(today + 'T12:00:00');
+  const end   = new Date(endStr + 'T12:00:00');
+  let d = new Date(start.getFullYear(), start.getMonth() + 1, 1, 12); // first of next month
+  while (d <= end) {
+    events.push({ type: 'out', amount: total, account: forecastSettings.budgetAccount, category: 'budget', label: 'Budgeted spending', date: isoDate(d) });
+    d = new Date(d.getFullYear(), d.getMonth() + 1, 1, 12);
+  }
+  return events;
+}
+
 function futureEvents(today, endStr) {
   let events = [];
   activeRecurring().forEach(r => buildOccurrences(r, today, endStr).forEach(o => { if (o.date > today) events.push(o); }));
+  events = events.concat(budgetSpendEvents(today, endStr));
   return events.sort((a, b) => a.date.localeCompare(b.date));
 }
 
@@ -891,7 +970,39 @@ function setForecastHorizon(n) {
   renderForecast();
 }
 
+function initForecastControls() {
+  const sel = document.getElementById('fc-budget-account');
+  if (sel) {
+    const operating = accounts.filter(a => a.group === 'liquid' || a.group === 'loc');
+    if (!forecastSettings.budgetAccount && operating.length) forecastSettings.budgetAccount = operating[0].name;
+    sel.innerHTML = operating.map(a => `<option value="${a.name}" ${a.name === forecastSettings.budgetAccount ? 'selected' : ''}>${a.name}</option>`).join('');
+    sel.style.display = forecastSettings.includeBudgets ? '' : 'none';
+  }
+  const chk = document.getElementById('fc-include-budgets');
+  if (chk) chk.checked = !!forecastSettings.includeBudgets;
+}
+
+async function saveForecastSettings() {
+  await setDoc(userDocRef('settings/forecast'), forecastSettings);
+}
+
+async function toggleBudgetForecast() {
+  forecastSettings.includeBudgets = document.getElementById('fc-include-budgets').checked;
+  const sel = document.getElementById('fc-budget-account');
+  if (forecastSettings.includeBudgets && !forecastSettings.budgetAccount && sel && sel.value) forecastSettings.budgetAccount = sel.value;
+  if (sel) sel.style.display = forecastSettings.includeBudgets ? '' : 'none';
+  await saveForecastSettings();
+  renderForecast();
+}
+
+async function saveBudgetForecastAccount() {
+  forecastSettings.budgetAccount = document.getElementById('fc-budget-account').value;
+  await saveForecastSettings();
+  renderForecast();
+}
+
 function renderForecast() {
+  initForecastControls();
   if (accounts.length === 0) {
     document.getElementById('fc-summary').innerHTML = `<div class="empty-state"><i class="ti ti-chart-line"></i><p>Add accounts first, then set recurring income and expenses below to see a projection.</p></div>`;
     document.getElementById('fc-debt-table').innerHTML = '';
@@ -903,10 +1014,12 @@ function renderForecast() {
   const now = tl.snaps[0], end = tl.snaps[tl.snaps.length - 1];
   const nwDelta   = end.netWorth - now.netWorth;
   const debtDelta = end.debt - now.debt;
+  const upColor   = d => d > 0.005 ? 'var(--teal-400)' : d < -0.005 ? 'var(--red-400)' : 'var(--text-tertiary)';
+  const debtColor = d => d < -0.005 ? 'var(--teal-400)' : d > 0.005 ? 'var(--red-400)' : 'var(--text-tertiary)';
   document.getElementById('fc-summary').innerHTML = `
     <div class="metric-card"><div class="metric-label">Net worth now</div><div class="metric-value indigo">${fmt(now.netWorth)}</div><div class="metric-sub">${fmt(now.debt)} total debt</div></div>
-    <div class="metric-card"><div class="metric-label">Projected in ${forecastHorizon} mo</div><div class="metric-value ${end.netWorth >= now.netWorth ? 'positive' : 'negative'}">${fmt(end.netWorth)}</div><div class="metric-sub">${(nwDelta >= 0 ? '+' : '') + fmtShort(nwDelta)} net worth</div></div>
-    <div class="metric-card"><div class="metric-label">Debt in ${forecastHorizon} mo</div><div class="metric-value ${debtDelta <= 0 ? 'positive' : 'negative'}">${fmt(end.debt)}</div><div class="metric-sub">${(debtDelta <= 0 ? '' : '+') + fmtShort(debtDelta)} vs now</div></div>`;
+    <div class="metric-card"><div class="metric-label">Projected in ${forecastHorizon} mo</div><div class="metric-value ${end.netWorth >= 0 ? 'positive' : 'negative'}">${fmt(end.netWorth)}</div><div class="metric-sub" style="color:${upColor(nwDelta)};">${(nwDelta >= 0 ? '+' : '') + fmtShort(nwDelta)} net worth</div></div>
+    <div class="metric-card"><div class="metric-label">Debt in ${forecastHorizon} mo</div><div class="metric-value negative">${fmt(end.debt)}</div><div class="metric-sub" style="color:${debtColor(debtDelta)};">${(debtDelta > 0 ? '+' : '') + fmtShort(debtDelta)} vs now</div></div>`;
 
   renderForecastChart(tl.snaps);
 
@@ -1232,7 +1345,12 @@ async function importTransactionsCSV(event) {
   if (!file) return;
   const text = await file.text();
   const rows = parseCSV(text);
-  let count = 0;
+  // Identity of a transaction for dedup: date, payee, amount, type, and the
+  // account(s). Category and notes are excluded because they can be edited
+  // after import, and a re-import shouldn't duplicate something you recategorized.
+  const sig = t => [t.date, (t.payee || '').trim().toLowerCase(), (parseFloat(t.amount) || 0).toFixed(2), t.type || 'out', (t.account || '').trim(), (t.toAccount || '').trim()].join('|');
+  const existing = new Set(transactions.map(sig)); // snapshot before import
+  let count = 0, skipped = 0;
   for (const row of rows) {
     if (!row.date || !row.payee || !row.amount) continue;
     const type = row.type || 'out';
@@ -1247,22 +1365,29 @@ async function importTransactionsCSV(event) {
       notes:     row.notes     || ''
     };
     if (type === 'transfer' && (!data.account || !data.toAccount || data.account === data.toAccount)) continue;
+    if (existing.has(sig(data))) { skipped++; continue; } // already present from a prior import
     const ref = await addDoc(userCol('transactions'), data);
     transactions.unshift({ id: ref.id, ...data });
     count++;
   }
   transactions.sort((a, b) => b.date.localeCompare(a.date));
   event.target.value = '';
-  showToast(`${count} transactions imported`);
+  showToast(skipped ? `${count} imported, ${skipped} skipped as duplicates` : `${count} transactions imported`);
   renderTransactions();
   renderDashboard();
   refreshBalancesIfVisible();
 }
 
 // ── Modal helpers ──────────────────────────────────────────────────────────
-function closeModal(event, id) {
-  if (event.target.classList.contains('modal-overlay')) document.getElementById(id).style.display = 'none';
-}
+// Click-away close is intentionally disabled: it was discarding in-progress
+// entries on any stray click on the backdrop. Dismiss via Cancel or Escape.
+function closeModal(event, id) { /* no-op: see note above */ }
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.modal-overlay').forEach(m => { if (m.style.display !== 'none') m.style.display = 'none'; });
+  }
+});
 
 // ── Auth ───────────────────────────────────────────────────────────────────
 async function signInWithGoogle() {
@@ -1296,7 +1421,7 @@ window.openEditAccount    = openEditAccount;
 window.deleteAccount      = deleteAccount;
 window.saveBudgets        = saveBudgets;
 window.loadSuggestedBudgets = loadSuggestedBudgets;
-window.moveAccount        = moveAccount;
+window.togglePrimary      = togglePrimary;
 window.setForecastHorizon = setForecastHorizon;
 window.openAddRecurring   = openAddRecurring;
 window.openEditRecurring  = openEditRecurring;
@@ -1308,6 +1433,8 @@ window.openEditMilestone  = openEditMilestone;
 window.saveMilestone      = saveMilestone;
 window.deleteMilestone    = deleteMilestone;
 window.exportProjectionCSV = exportProjectionCSV;
+window.toggleBudgetForecast = toggleBudgetForecast;
+window.saveBudgetForecastAccount = saveBudgetForecastAccount;
 window.closeModal         = closeModal;
 window.renderTransactions = renderTransactions;
 window.signInWithGoogle   = signInWithGoogle;
