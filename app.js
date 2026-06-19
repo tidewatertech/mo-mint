@@ -131,6 +131,13 @@ async function loadTransactions() {
 async function loadAccounts() {
   const snap = await getDocs(userCol('accounts'));
   accounts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  // Migration: any account without an anchor date gets one. Existing `balance`
+  // becomes the opening figure as of this date. Adjust per-account afterward if
+  // the stored figure was accurate as of a different date.
+  for (const a of accounts.filter(x => !x.openingAsOf)) {
+    a.openingAsOf = '2026-06-01';
+    await updateDoc(doc(db, 'users', currentUser.uid, 'accounts', a.id), { openingAsOf: a.openingAsOf });
+  }
 }
 
 async function loadBudgets() {
@@ -189,8 +196,42 @@ function renderDashboard() {
   renderRecentTxns(txns);
 }
 
+// ── Balance engine ─────────────────────────────────────────────────────────
+// Balances are computed, never stored as a running total. Each account carries
+// an opening figure (`balance`) anchored to a date (`openingAsOf`); the live
+// balance is that opening plus the effect of every transaction tagged to the
+// account dated on or after the anchor. Add / edit / delete / import all "just
+// work" because nothing is stored to drift.
+//
+// Effect is always from the perspective of the tagged account:
+//   asset      → 'in' raises,  'out' lowers
+//   liability  → 'in' (paydown) lowers owed,  'out' (charge/draw) raises owed
+function txnEffect(t, a) {
+  const into = t.type === 'in' ? 1 : -1;
+  return a.isLiability ? -into * t.amount : into * t.amount;
+}
+
+function accountBalance(a) {
+  const anchor = a.openingAsOf || '0000-01-01';
+  let bal = a.balance || 0;
+  for (const t of transactions) {
+    if (t.account === a.name && t.date >= anchor) bal += txnEffect(t, a);
+  }
+  return bal;
+}
+
 function calcNetWorth() {
-  return accounts.reduce((s, a) => a.isLiability ? s - a.balance : s + a.balance, 0);
+  return accounts.reduce((s, a) => {
+    const bal = accountBalance(a);
+    return a.isLiability ? s - bal : s + bal;
+  }, 0);
+}
+
+// Re-render the balance-bearing pages if the user is looking at one, so a
+// transaction change is reflected immediately rather than on next navigation.
+function refreshBalancesIfVisible() {
+  if (document.getElementById('page-accounts').classList.contains('active')) renderAccounts();
+  if (document.getElementById('page-networth').classList.contains('active')) renderNetworth();
 }
 
 function renderSpendingRing(txns) {
@@ -393,6 +434,7 @@ async function saveTransaction() {
   document.getElementById('txn-modal').style.display = 'none';
   renderDashboard();
   if (document.getElementById('page-transactions').classList.contains('active')) renderTransactions();
+  refreshBalancesIfVisible();
 }
 
 async function deleteTxn(id) {
@@ -402,6 +444,7 @@ async function deleteTxn(id) {
   showToast('Transaction deleted');
   renderDashboard();
   if (document.getElementById('page-transactions').classList.contains('active')) renderTransactions();
+  refreshBalancesIfVisible();
 }
 
 // ── Recategorize ───────────────────────────────────────────────────────────
@@ -443,8 +486,9 @@ function renderAccounts() {
 }
 
 function accountRowHTML(a) {
-  const balClass = a.isLiability ? 'liability' : (a.balance === 0 ? 'neutral' : 'asset');
-  const balStr   = a.isLiability ? `-${fmt(a.balance)}` : fmt(a.balance);
+  const bal      = accountBalance(a);
+  const balClass = a.isLiability ? 'liability' : (bal === 0 ? 'neutral' : 'asset');
+  const balStr   = a.isLiability ? `-${fmt(bal)}` : fmt(bal);
   return `<div class="account-row">
     <div class="account-left">
       <div class="account-name">${a.name}</div>
@@ -462,6 +506,7 @@ function openAddAccount() {
   document.getElementById('account-modal-title').textContent = 'Add account';
   document.getElementById('acc-save-btn').textContent        = 'Add account';
   ['acc-name','acc-balance','acc-rate','acc-notes'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('acc-opening-date').value = '2026-06-01';
   document.getElementById('account-modal').style.display = 'flex';
 }
 
@@ -472,9 +517,10 @@ async function saveAccount() {
   const balance = parseFloat(document.getElementById('acc-balance').value) || 0;
   const rate  = document.getElementById('acc-rate').value.trim();
   const notes = document.getElementById('acc-notes').value.trim();
+  const openingAsOf = document.getElementById('acc-opening-date').value || '2026-06-01';
   const isLiability = ['loc','credit-card','other-liability'].includes(group);
   if (!name) { showToast('Please enter an account name.', 'error'); return; }
-  const data = { name, type, group, balance, rate, notes, isLiability };
+  const data = { name, type, group, balance, openingAsOf, rate, notes, isLiability };
   const ref  = await addDoc(userCol('accounts'), data);
   accounts.push({ id: ref.id, ...data });
   document.getElementById('account-modal').style.display = 'none';
@@ -488,17 +534,19 @@ function openEditBalance(id) {
   balanceAccId = id;
   document.getElementById('bal-account-name').textContent = acc.name;
   document.getElementById('bal-amount').value = acc.balance;
+  document.getElementById('bal-date').value   = acc.openingAsOf || '2026-06-01';
   document.getElementById('balance-modal').style.display = 'flex';
 }
 
 async function saveBalance() {
-  const balance = parseFloat(document.getElementById('bal-amount').value);
-  if (isNaN(balance) || balance < 0) { showToast('Please enter a valid balance.', 'error'); return; }
-  await updateDoc(doc(db, 'users', currentUser.uid, 'accounts', balanceAccId), { balance });
+  const balance     = parseFloat(document.getElementById('bal-amount').value);
+  const openingAsOf = document.getElementById('bal-date').value || '2026-06-01';
+  if (isNaN(balance)) { showToast('Please enter a valid balance.', 'error'); return; }
+  await updateDoc(doc(db, 'users', currentUser.uid, 'accounts', balanceAccId), { balance, openingAsOf });
   const acc = accounts.find(a => a.id === balanceAccId);
-  if (acc) acc.balance = balance;
+  if (acc) { acc.balance = balance; acc.openingAsOf = openingAsOf; }
   document.getElementById('balance-modal').style.display = 'none';
-  showToast('Balance updated');
+  showToast('Opening balance updated');
   renderAccounts();
   renderDashboard();
 }
@@ -553,8 +601,8 @@ async function saveBudgets() {
 
 // ── Net worth ──────────────────────────────────────────────────────────────
 function renderNetworth() {
-  const assets      = accounts.filter(a => !a.isLiability).reduce((s, a) => s + a.balance, 0);
-  const liabilities = accounts.filter(a =>  a.isLiability).reduce((s, a) => s + a.balance, 0);
+  const assets      = accounts.filter(a => !a.isLiability).reduce((s, a) => s + accountBalance(a), 0);
+  const liabilities = accounts.filter(a =>  a.isLiability).reduce((s, a) => s + accountBalance(a), 0);
   const nw    = assets - liabilities;
   const total = assets + liabilities;
 
@@ -577,7 +625,7 @@ function renderNetworth() {
         <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">${GROUP_LABELS[g]}</div>
         ${groups[g].map(a => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:5px 0;border-bottom:1px solid var(--border);">
           <span style="color:var(--text-secondary);">${a.name.split('—')[0].trim()}</span>
-          <span style="font-weight:500;color:${a.isLiability ? 'var(--red-400)' : 'var(--teal-400)'};">${a.isLiability ? '-' : ''}${fmt(a.balance)}</span>
+          <span style="font-weight:500;color:${a.isLiability ? 'var(--red-400)' : 'var(--teal-400)'};">${a.isLiability ? '-' : ''}${fmt(accountBalance(a))}</span>
         </div>`).join('')}
       </div>`).join('');
   }
@@ -611,6 +659,7 @@ async function importAccountsCSV(event) {
       type:        row.type        || 'other',
       group:       row.group       || 'liquid',
       balance:     parseFloat(row.balance) || 0,
+      openingAsOf: row.openingAsOf || row.asOf || '2026-06-01',
       rate:        row.rate        || '',
       notes:       row.notes       || '',
       isLiability: row.isLiability === 'true'
@@ -651,6 +700,7 @@ async function importTransactionsCSV(event) {
   showToast(`${count} transactions imported`);
   renderTransactions();
   renderDashboard();
+  refreshBalancesIfVisible();
 }
 
 // ── Modal helpers ──────────────────────────────────────────────────────────

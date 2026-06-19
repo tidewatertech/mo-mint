@@ -498,13 +498,18 @@
     </div>
     <div class="form-row">
       <div class="form-group">
-        <label class="form-label">Current balance ($)</label>
+        <label class="form-label">Opening balance ($)</label>
         <input class="form-input" type="number" step="0.01" id="acc-balance" placeholder="0.00">
       </div>
       <div class="form-group">
         <label class="form-label">Interest rate (optional)</label>
         <input class="form-input" type="text" id="acc-rate" placeholder="e.g. 8.94%">
       </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Balance accurate as of</label>
+      <input class="form-input" type="date" id="acc-opening-date" value="2026-06-01">
+      <div style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">The live balance is this opening figure plus every transaction tagged to the account on or after this date.</div>
     </div>
     <div class="form-group">
       <label class="form-label">Notes (optional)</label>
@@ -520,11 +525,16 @@
 <!-- Edit Balance Modal -->
 <div class="modal-overlay" id="balance-modal" style="display:none;" onclick="closeModal(event,'balance-modal')">
   <div class="modal" onclick="event.stopPropagation()">
-    <div class="modal-title">Update balance</div>
+    <div class="modal-title">Re-baseline account</div>
     <div style="font-size:14px;font-weight:500;margin-bottom:1rem;" id="bal-account-name"></div>
     <div class="form-group">
-      <label class="form-label">Current balance ($)</label>
+      <label class="form-label">Opening balance ($)</label>
       <input class="form-input" type="number" step="0.01" id="bal-amount" placeholder="0.00">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Balance accurate as of</label>
+      <input class="form-input" type="date" id="bal-date" value="2026-06-01">
+      <div style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">Set this to the date your figure is correct. Transactions before it are ignored; transactions on or after it stack on top.</div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="document.getElementById('balance-modal').style.display='none'">Cancel</button>
