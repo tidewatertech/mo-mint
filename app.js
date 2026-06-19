@@ -14,10 +14,16 @@ let currentYear = new Date().getFullYear();
 let transactions = [];
 let accounts = [];
 let budgets = {};
+let recurring = [];
+let milestones = [];
+let forecastHorizon = 12;
+let forecastChart = null;
 let editingTxnId = null;
+let editingRecurringId = null;
+let editingMilestoneId = null;
 let recatTxnId = null;
-let balanceAccId = null;
 let txnType = 'out';
+let recurType = 'out';
 let moChart = null;
 
 const CATEGORIES = [
@@ -44,6 +50,20 @@ const GROUP_LABELS = {
   'credit-card':     'Credit cards',
   'other-asset':     'Other assets',
   'other-liability': 'Other liabilities'
+};
+
+// Starting-point monthly budgets derived from the Financial Planning context.
+// Housing ($3,200 full rent) is the one confirmed figure; the rest are
+// estimates to be corrected. Loaded only on request, never silently saved.
+const SUGGESTED_BUDGETS = {
+  housing: 3200, groceries: 600, transport: 250, dining: 200, utilities: 400,
+  health: 150, personal: 100, kids: 350, subscriptions: 60, entertainment: 100,
+  savings: 450, debt: 500, other: 150
+};
+
+const FREQ_LABELS = {
+  weekly: 'Weekly', biweekly: 'Every 2 weeks', monthly: 'Monthly',
+  quarterly: 'Quarterly', annual: 'Annually', once: 'One time'
 };
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -87,16 +107,17 @@ function initTheme() {
 }
 
 // ── Navigation ─────────────────────────────────────────────────────────────
-const PAGE_TITLES = { dashboard: 'Overview', transactions: 'Transactions', budgets: 'Budgets', accounts: 'Accounts', networth: 'Net worth' };
+const PAGE_TITLES = { dashboard: 'Overview', transactions: 'Transactions', budgets: 'Budgets', forecast: 'Forecast', accounts: 'Accounts', networth: 'Net worth' };
 function switchPage(id) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item, .mobile-nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById(`page-${id}`).classList.add('active');
   document.querySelectorAll(`[data-page="${id}"]`).forEach(n => n.classList.add('active'));
   document.getElementById('page-title').textContent = PAGE_TITLES[id] || id;
-  document.getElementById('month-nav').style.display = (id === 'accounts' || id === 'networth') ? 'none' : 'flex';
+  document.getElementById('month-nav').style.display = (id === 'accounts' || id === 'networth' || id === 'forecast') ? 'none' : 'flex';
   if (id === 'transactions') renderTransactions();
   if (id === 'budgets') renderBudgets();
+  if (id === 'forecast') { populateExportMonths(); renderForecast(); }
   if (id === 'accounts') renderAccounts();
   if (id === 'networth') renderNetworth();
 }
@@ -118,7 +139,7 @@ function changeMonth(dir) {
 
 // ── Firebase data ──────────────────────────────────────────────────────────
 async function loadAll() {
-  await Promise.all([loadTransactions(), loadAccounts(), loadBudgets()]);
+  await Promise.all([loadTransactions(), loadAccounts(), loadBudgets(), loadRecurring(), loadMilestones()]);
   renderDashboard();
 }
 
@@ -131,13 +152,36 @@ async function loadTransactions() {
 async function loadAccounts() {
   const snap = await getDocs(userCol('accounts'));
   accounts = snap.docs.map(d => ({ id: d.id, ...d.data() }));
-  // Migration: any account without an anchor date gets one. Existing `balance`
-  // becomes the opening figure as of this date. Adjust per-account afterward if
-  // the stored figure was accurate as of a different date.
+  // Migration: anchor date for the balance engine.
   for (const a of accounts.filter(x => !x.openingAsOf)) {
     a.openingAsOf = '2026-06-01';
     await updateDoc(doc(db, 'users', currentUser.uid, 'accounts', a.id), { openingAsOf: a.openingAsOf });
   }
+  // Migration: assign a sortOrder within each group if missing, then persist.
+  if (accounts.some(a => a.sortOrder === undefined)) {
+    normalizeSortOrders();
+    await Promise.all(accounts.map(a =>
+      updateDoc(doc(db, 'users', currentUser.uid, 'accounts', a.id), { sortOrder: a.sortOrder })));
+  }
+}
+
+function normalizeSortOrders() {
+  const groups = {};
+  accounts.forEach(a => { (groups[a.group] = groups[a.group] || []).push(a); });
+  Object.values(groups).forEach(list => {
+    list.sort((a, b) => (a.sortOrder ?? 9999) - (b.sortOrder ?? 9999) || (a.name || '').localeCompare(b.name || ''));
+    list.forEach((a, i) => a.sortOrder = i);
+  });
+}
+
+async function loadRecurring() {
+  const snap = await getDocs(userCol('recurring'));
+  recurring = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+}
+
+async function loadMilestones() {
+  const snap = await getDocs(userCol('milestones'));
+  milestones = snap.docs.map(d => ({ id: d.id, ...d.data() }));
 }
 
 async function loadBudgets() {
@@ -211,13 +255,34 @@ function txnEffect(t, a) {
   return a.isLiability ? -into * t.amount : into * t.amount;
 }
 
-function accountBalance(a) {
+// Effect of a single event (transaction OR recurring occurrence) on a named
+// account. Shared by the live balance engine and the forecast projector so the
+// signs can never diverge between them.
+function eventEffectOn(ev, acctName, isLiab) {
+  if (ev.type === 'transfer') {
+    if (ev.account   === acctName) return isLiab ?  ev.amount : -ev.amount;
+    if (ev.toAccount === acctName) return isLiab ? -ev.amount :  ev.amount;
+    return 0;
+  }
+  if (ev.account !== acctName) return 0;
+  const into = ev.type === 'in' ? 1 : -1;
+  return isLiab ? -into * ev.amount : into * ev.amount;
+}
+
+// Balance of an account as of a given date (inclusive), from the opening anchor
+// plus every transaction in [anchor, asOf].
+function balanceAsOf(a, asOf) {
   const anchor = a.openingAsOf || '0000-01-01';
   let bal = a.balance || 0;
   for (const t of transactions) {
-    if (t.account === a.name && t.date >= anchor) bal += txnEffect(t, a);
+    if (t.date < anchor || t.date > asOf) continue;
+    bal += eventEffectOn(t, a.name, a.isLiability);
   }
   return bal;
+}
+
+function accountBalance(a) {
+  return balanceAsOf(a, '9999-12-31');
 }
 
 function calcNetWorth() {
@@ -326,7 +391,7 @@ function renderTransactions() {
   const type = document.getElementById('filter-type').value;
   const txns = getMonthTxns(currentMonth, currentYear).filter(t => {
     if (cat  && t.category !== cat)  return false;
-    if (acc  && t.account  !== acc)  return false;
+    if (acc  && t.account !== acc && t.toAccount !== acc) return false;
     if (type && t.type     !== type) return false;
     return true;
   });
@@ -346,8 +411,24 @@ function populateFilters() {
 }
 
 function txnRowHTML(t) {
-  const cat     = getCat(t.category);
   const dateStr = new Date(t.date + 'T12:00:00').toLocaleDateString('en-CA', { month: 'short', day: 'numeric' });
+  if (t.type === 'transfer') {
+    return `<div class="txn-row">
+      <div class="txn-icon" style="background:#7F77DD22;"><i class="ti ti-arrows-exchange" style="color:#7F77DD"></i></div>
+      <div class="txn-info">
+        <div class="txn-name">${t.payee}</div>
+        <div class="txn-meta">Transfer · ${dateStr} · ${t.account} → ${t.toAccount}</div>
+      </div>
+      <div class="txn-right">
+        <div class="txn-amount" style="color:#7F77DD;">${fmt(t.amount)}</div>
+        <div class="txn-actions">
+          <button class="icon-btn" onclick="openEditTxn('${t.id}')"     title="Edit"><i class="ti ti-edit"></i></button>
+          <button class="icon-btn danger" onclick="deleteTxn('${t.id}')" title="Delete"><i class="ti ti-trash"></i></button>
+        </div>
+      </div>
+    </div>`;
+  }
+  const cat = getCat(t.category);
   return `<div class="txn-row">
     <div class="txn-icon" style="background:${cat.color}22;"><i class="ti ${catIcon(t.category)}" style="color:${cat.color}"></i></div>
     <div class="txn-info">
@@ -395,31 +476,46 @@ function openEditTxn(id) {
   document.getElementById('txn-amount').value = t.amount;
   document.getElementById('txn-payee').value  = t.payee;
   document.getElementById('txn-notes').value  = t.notes || '';
+  populateTxnSelects(t.category, t.account, t.toAccount || '');
   setType(t.type);
-  populateTxnSelects(t.category, t.account);
   document.getElementById('txn-modal').style.display = 'flex';
 }
 
-function populateTxnSelects(selCat = '', selAcc = '') {
+function populateTxnSelects(selCat = '', selAcc = '', selTo = '') {
   document.getElementById('txn-category').innerHTML = CATEGORIES.map(c => `<option value="${c.id}" ${c.id === selCat ? 'selected' : ''}>${c.label}</option>`).join('');
-  document.getElementById('txn-account').innerHTML  = accounts.map(a => `<option value="${a.name}" ${a.name === selAcc ? 'selected' : ''}>${a.name}</option>`).join('');
+  const accOpts = sel => accounts.map(a => `<option value="${a.name}" ${a.name === sel ? 'selected' : ''}>${a.name}</option>`).join('');
+  document.getElementById('txn-account').innerHTML    = accOpts(selAcc);
+  document.getElementById('txn-to-account').innerHTML = accOpts(selTo);
 }
 
 function setType(type) {
   txnType = type;
-  document.getElementById('toggle-out').className = 'toggle-btn' + (type === 'out' ? ' active-out' : '');
-  document.getElementById('toggle-in').className  = 'toggle-btn' + (type === 'in'  ? ' active-in'  : '');
+  document.getElementById('toggle-out').className      = 'toggle-btn' + (type === 'out'      ? ' active-out'      : '');
+  document.getElementById('toggle-in').className       = 'toggle-btn' + (type === 'in'       ? ' active-in'       : '');
+  document.getElementById('toggle-transfer').className = 'toggle-btn' + (type === 'transfer' ? ' active-transfer' : '');
+  const isTransfer = type === 'transfer';
+  document.getElementById('txn-to-account-group').style.display = isTransfer ? '' : 'none';
+  document.getElementById('txn-category-group').style.display   = isTransfer ? 'none' : '';
+  document.getElementById('txn-account-label').textContent      = isTransfer ? 'From account' : 'Account';
 }
 
 async function saveTransaction() {
   const date     = document.getElementById('txn-date').value;
   const amount   = parseFloat(document.getElementById('txn-amount').value);
   const payee    = document.getElementById('txn-payee').value.trim();
-  const category = document.getElementById('txn-category').value;
   const account  = document.getElementById('txn-account').value;
   const notes    = document.getElementById('txn-notes').value.trim();
   if (!date || isNaN(amount) || amount <= 0 || !payee) { showToast('Please fill in date, amount, and payee.', 'error'); return; }
-  const data = { date, amount, payee, category, account, type: txnType, notes };
+  let data;
+  if (txnType === 'transfer') {
+    const toAccount = document.getElementById('txn-to-account').value;
+    if (!account || !toAccount)  { showToast('Pick both accounts for a transfer.', 'error'); return; }
+    if (account === toAccount)   { showToast('A transfer needs two different accounts.', 'error'); return; }
+    data = { date, amount, payee, category: 'transfer', type: 'transfer', account, toAccount, notes };
+  } else {
+    const category = document.getElementById('txn-category').value;
+    data = { date, amount, payee, category, account, type: txnType, toAccount: '', notes };
+  }
   if (window._editingTxnId) {
     await updateDoc(doc(db, 'users', currentUser.uid, 'transactions', window._editingTxnId), data);
     const idx = transactions.findIndex(t => t.id === window._editingTxnId);
@@ -478,34 +574,59 @@ function renderAccounts() {
     el.innerHTML = `<div class="empty-state"><i class="ti ti-building-bank"></i><p>No accounts yet. Run the seed file locally to populate your accounts, or add them manually.</p></div>`;
     return;
   }
-  el.innerHTML = groupOrder.filter(g => groups[g]).map(g => `
-    <div class="account-group">
+  el.innerHTML = groupOrder.filter(g => groups[g]).map(g => {
+    const list = groups[g].slice().sort((a, b) => (a.sortOrder ?? 9999) - (b.sortOrder ?? 9999));
+    return `<div class="account-group">
       <div class="account-group-title">${GROUP_LABELS[g]}</div>
-      ${groups[g].map(a => accountRowHTML(a)).join('')}
-    </div>`).join('');
+      ${list.map((a, i) => accountRowHTML(a, i === 0, i === list.length - 1)).join('')}
+    </div>`;
+  }).join('');
 }
 
-function accountRowHTML(a) {
+function accountRowHTML(a, isFirst, isLast) {
   const bal      = accountBalance(a);
   const balClass = a.isLiability ? 'liability' : (bal === 0 ? 'neutral' : 'asset');
   const balStr   = a.isLiability ? `-${fmt(bal)}` : fmt(bal);
   return `<div class="account-row">
+    <div class="account-reorder">
+      <button class="icon-btn reorder" ${isFirst ? 'disabled' : ''} onclick="moveAccount('${a.id}',-1)" title="Move up"><i class="ti ti-chevron-up"></i></button>
+      <button class="icon-btn reorder" ${isLast ? 'disabled' : ''} onclick="moveAccount('${a.id}',1)" title="Move down"><i class="ti ti-chevron-down"></i></button>
+    </div>
     <div class="account-left">
       <div class="account-name">${a.name}</div>
       <div class="account-type">${a.type.toUpperCase()}${a.rate ? ' · ' + a.rate : ''}${a.notes ? ' · ' + a.notes : ''}</div>
     </div>
     <div class="account-right">
       <div class="account-bal ${balClass}">${balStr}</div>
-      <button class="icon-btn" onclick="openEditBalance('${a.id}')" title="Update balance"><i class="ti ti-pencil"></i></button>
+      <button class="icon-btn" onclick="openEditAccount('${a.id}')" title="Edit account"><i class="ti ti-pencil"></i></button>
       <button class="icon-btn danger" onclick="deleteAccount('${a.id}')" title="Delete"><i class="ti ti-trash"></i></button>
     </div>
   </div>`;
 }
 
+async function moveAccount(id, dir) {
+  const a = accounts.find(x => x.id === id);
+  if (!a) return;
+  const siblings = accounts.filter(x => x.group === a.group).sort((x, y) => (x.sortOrder ?? 9999) - (y.sortOrder ?? 9999));
+  const i = siblings.findIndex(x => x.id === id);
+  const j = i + dir;
+  if (j < 0 || j >= siblings.length) return;
+  const b = siblings[j];
+  const tmp = a.sortOrder; a.sortOrder = b.sortOrder; b.sortOrder = tmp;
+  renderAccounts();
+  await Promise.all([
+    updateDoc(doc(db, 'users', currentUser.uid, 'accounts', a.id), { sortOrder: a.sortOrder }),
+    updateDoc(doc(db, 'users', currentUser.uid, 'accounts', b.id), { sortOrder: b.sortOrder })
+  ]);
+}
+
 function openAddAccount() {
+  window._editingAccId = null;
   document.getElementById('account-modal-title').textContent = 'Add account';
   document.getElementById('acc-save-btn').textContent        = 'Add account';
   ['acc-name','acc-balance','acc-rate','acc-notes'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('acc-type').value  = 'chequing';
+  document.getElementById('acc-group').value = 'liquid';
   document.getElementById('acc-opening-date').value = '2026-06-01';
   document.getElementById('account-modal').style.display = 'flex';
 }
@@ -521,34 +642,51 @@ async function saveAccount() {
   const isLiability = ['loc','credit-card','other-liability'].includes(group);
   if (!name) { showToast('Please enter an account name.', 'error'); return; }
   const data = { name, type, group, balance, openingAsOf, rate, notes, isLiability };
-  const ref  = await addDoc(userCol('accounts'), data);
-  accounts.push({ id: ref.id, ...data });
+  if (window._editingAccId) {
+    const prev = accounts.find(a => a.id === window._editingAccId);
+    const oldName = prev ? prev.name : null;
+    await updateDoc(doc(db, 'users', currentUser.uid, 'accounts', window._editingAccId), data);
+    const idx = accounts.findIndex(a => a.id === window._editingAccId);
+    if (idx > -1) accounts[idx] = { id: window._editingAccId, ...data };
+    if (oldName && oldName !== name) await relinkAccountName(oldName, name);
+    showToast('Account updated');
+  } else {
+    const groupMax = accounts.filter(a => a.group === group).reduce((m, a) => Math.max(m, a.sortOrder ?? -1), -1);
+    data.sortOrder = groupMax + 1;
+    const ref = await addDoc(userCol('accounts'), data);
+    accounts.push({ id: ref.id, ...data });
+    showToast('Account added');
+  }
   document.getElementById('account-modal').style.display = 'none';
-  showToast('Account added');
-  renderAccounts();
-}
-
-function openEditBalance(id) {
-  const acc = accounts.find(a => a.id === id);
-  if (!acc) return;
-  balanceAccId = id;
-  document.getElementById('bal-account-name').textContent = acc.name;
-  document.getElementById('bal-amount').value = acc.balance;
-  document.getElementById('bal-date').value   = acc.openingAsOf || '2026-06-01';
-  document.getElementById('balance-modal').style.display = 'flex';
-}
-
-async function saveBalance() {
-  const balance     = parseFloat(document.getElementById('bal-amount').value);
-  const openingAsOf = document.getElementById('bal-date').value || '2026-06-01';
-  if (isNaN(balance)) { showToast('Please enter a valid balance.', 'error'); return; }
-  await updateDoc(doc(db, 'users', currentUser.uid, 'accounts', balanceAccId), { balance, openingAsOf });
-  const acc = accounts.find(a => a.id === balanceAccId);
-  if (acc) { acc.balance = balance; acc.openingAsOf = openingAsOf; }
-  document.getElementById('balance-modal').style.display = 'none';
-  showToast('Opening balance updated');
   renderAccounts();
   renderDashboard();
+}
+
+// Keep transactions linked when an account is renamed (link is by name string).
+async function relinkAccountName(oldName, newName) {
+  const affected = transactions.filter(t => t.account === oldName || t.toAccount === oldName);
+  for (const t of affected) {
+    const patch = {};
+    if (t.account === oldName)   { t.account = newName;   patch.account = newName; }
+    if (t.toAccount === oldName) { t.toAccount = newName; patch.toAccount = newName; }
+    await updateDoc(doc(db, 'users', currentUser.uid, 'transactions', t.id), patch);
+  }
+}
+
+function openEditAccount(id) {
+  const a = accounts.find(x => x.id === id);
+  if (!a) return;
+  window._editingAccId = id;
+  document.getElementById('account-modal-title').textContent = 'Edit account';
+  document.getElementById('acc-save-btn').textContent        = 'Save changes';
+  document.getElementById('acc-name').value         = a.name || '';
+  document.getElementById('acc-type').value         = a.type  || 'chequing';
+  document.getElementById('acc-group').value        = a.group || 'liquid';
+  document.getElementById('acc-balance').value      = a.balance ?? 0;
+  document.getElementById('acc-rate').value         = a.rate  || '';
+  document.getElementById('acc-notes').value        = a.notes || '';
+  document.getElementById('acc-opening-date').value = a.openingAsOf || '2026-06-01';
+  document.getElementById('account-modal').style.display = 'flex';
 }
 
 async function deleteAccount(id) {
@@ -586,6 +724,20 @@ function renderBudgets() {
       <label style="flex:1;font-size:12px;color:var(--text-secondary);">${c.label}</label>
       <input type="number" class="form-input" style="width:90px;padding:5px 8px;" placeholder="0" value="${budgets[c.id] || ''}" data-cat="${c.id}">
     </div>`).join('');
+  const totalBudget = budgetCats.reduce((s, c) => s + (budgets[c.id] || 0), 0);
+  const totalSpent  = budgetCats.reduce((s, c) => s + (spending[c.id] || 0), 0);
+  const totEl = document.getElementById('budget-total');
+  if (totEl) totEl.innerHTML = `Spent <strong>${fmt(totalSpent)}</strong> of <strong>${fmt(totalBudget)}</strong> budgeted this month`;
+}
+
+// Fill the form inputs with context-derived starting points. Does not save:
+// the person reviews and hits Save. Only housing ($3,200) is a confirmed figure.
+function loadSuggestedBudgets() {
+  document.querySelectorAll('#budget-form-list input').forEach(inp => {
+    const v = SUGGESTED_BUDGETS[inp.dataset.cat];
+    if (v !== undefined) inp.value = v;
+  });
+  showToast('Suggested amounts filled. Review, then Save.');
 }
 
 async function saveBudgets() {
@@ -632,6 +784,407 @@ function renderNetworth() {
 
   document.getElementById('nw-assets-list').innerHTML      = groupedList(accounts.filter(a => !a.isLiability), ['liquid','registered','other-asset']);
   document.getElementById('nw-liabilities-list').innerHTML = groupedList(accounts.filter(a =>  a.isLiability), ['loc','credit-card','other-liability']);
+}
+
+// ── Forecast / debt repayment planner ───────────────────────────────────────
+const csvCell = v => { v = String(v ?? ''); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+const isoDate = d => d.toISOString().split('T')[0];
+const fmtMonthYr = s => new Date(s + 'T12:00:00').toLocaleDateString('en-CA', { month: 'short', year: 'numeric' });
+
+// Expand a recurring rule into dated occurrences within [startStr, endStr].
+function buildOccurrences(rec, startStr, endStr) {
+  const occ = [];
+  const start = new Date(startStr + 'T12:00:00');
+  const end   = new Date(endStr + 'T12:00:00');
+  const recEnd = rec.endDate ? new Date(rec.endDate + 'T12:00:00') : null;
+  const anchor = new Date((rec.anchorDate || startStr) + 'T12:00:00');
+  const push = d => {
+    if (d < start || d > end) return;
+    if (recEnd && d > recEnd) return;
+    occ.push({ ...rec, date: isoDate(d) });
+  };
+  const freq = rec.frequency || 'monthly';
+  if (freq === 'once') { push(anchor); return occ; }
+  if (freq === 'weekly' || freq === 'biweekly') {
+    const step = freq === 'weekly' ? 7 : 14;
+    const d = new Date(anchor);
+    while (d < start) d.setDate(d.getDate() + step);
+    while (d <= end) { push(new Date(d)); d.setDate(d.getDate() + step); }
+    return occ;
+  }
+  const monthStep = freq === 'monthly' ? 1 : freq === 'quarterly' ? 3 : 12;
+  const day = anchor.getDate();
+  let d = new Date(start.getFullYear(), start.getMonth(), 1, 12);
+  while (d <= end) {
+    const since = (d.getFullYear() - anchor.getFullYear()) * 12 + (d.getMonth() - anchor.getMonth());
+    if (since >= 0 && since % monthStep === 0) {
+      const dim = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+      push(new Date(d.getFullYear(), d.getMonth(), Math.min(day, dim), 12));
+    }
+    d = new Date(d.getFullYear(), d.getMonth() + 1, 1, 12);
+  }
+  return occ;
+}
+
+function activeRecurring() { return recurring.filter(r => r.active !== false); }
+
+function futureEvents(today, endStr) {
+  let events = [];
+  activeRecurring().forEach(r => buildOccurrences(r, today, endStr).forEach(o => { if (o.date > today) events.push(o); }));
+  return events.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+function projectTimeline(horizonMonths) {
+  const today = todayStr();
+  const start = new Date(today + 'T12:00:00');
+  const endStr = isoDate(new Date(start.getFullYear(), start.getMonth() + horizonMonths + 1, 0, 12));
+  const bal = {};
+  accounts.forEach(a => { bal[a.name] = balanceAsOf(a, today); });
+  const liquidSet = new Set(accounts.filter(a => !a.isLiability && a.group === 'liquid').map(a => a.name));
+  const totals = b => {
+    let nw = 0, debt = 0, liquid = 0;
+    accounts.forEach(a => {
+      const v = b[a.name];
+      if (a.isLiability) { nw -= v; debt += v; }
+      else { nw += v; if (liquidSet.has(a.name)) liquid += v; }
+    });
+    return { netWorth: nw, debt, liquid };
+  };
+  const events = futureEvents(today, endStr);
+  const snaps = [{ label: 'Now', date: today, ...totals(bal) }];
+  let ei = 0;
+  for (let m = 0; m < horizonMonths; m++) {
+    const mEnd = isoDate(new Date(start.getFullYear(), start.getMonth() + m + 1, 0, 12));
+    while (ei < events.length && events[ei].date <= mEnd) {
+      const ev = events[ei];
+      accounts.forEach(a => { bal[a.name] += eventEffectOn(ev, a.name, a.isLiability); });
+      ei++;
+    }
+    snaps.push({ label: fmtMonthYr(mEnd), date: mEnd, ...totals(bal) });
+  }
+  return { today, endStr, snaps, finalBalances: { ...bal } };
+}
+
+function projectMilestone(mil, horizonMonths) {
+  const acct = accounts.find(a => a.name === mil.account);
+  if (!acct) return { state: 'noaccount' };
+  const today = todayStr();
+  const start = new Date(today + 'T12:00:00');
+  const endStr = isoDate(new Date(start.getFullYear(), start.getMonth() + horizonMonths + 1, 0, 12));
+  const target = mil.targetAmount || 0;
+  const isLiab = acct.isLiability;
+  const meets = b => isLiab ? b <= target + 0.005 : b >= target - 0.005;
+  const current = balanceAsOf(acct, today);
+  if (meets(current)) return { state: 'met', date: today, current, already: true };
+  let bal = current;
+  for (const ev of futureEvents(today, endStr)) {
+    bal += eventEffectOn(ev, acct.name, isLiab);
+    if (meets(bal)) return { state: 'met', date: ev.date, current };
+  }
+  return { state: 'beyond', current, projected: bal };
+}
+
+function setForecastHorizon(n) {
+  forecastHorizon = n;
+  document.getElementById('fc-h6').className  = 'seg-btn' + (n === 6  ? ' active' : '');
+  document.getElementById('fc-h12').className = 'seg-btn' + (n === 12 ? ' active' : '');
+  renderForecast();
+}
+
+function renderForecast() {
+  if (accounts.length === 0) {
+    document.getElementById('fc-summary').innerHTML = `<div class="empty-state"><i class="ti ti-chart-line"></i><p>Add accounts first, then set recurring income and expenses below to see a projection.</p></div>`;
+    document.getElementById('fc-debt-table').innerHTML = '';
+    document.getElementById('fc-milestones').innerHTML = '';
+    renderRecurringList();
+    return;
+  }
+  const tl = projectTimeline(forecastHorizon);
+  const now = tl.snaps[0], end = tl.snaps[tl.snaps.length - 1];
+  const nwDelta   = end.netWorth - now.netWorth;
+  const debtDelta = end.debt - now.debt;
+  document.getElementById('fc-summary').innerHTML = `
+    <div class="metric-card"><div class="metric-label">Net worth now</div><div class="metric-value indigo">${fmt(now.netWorth)}</div><div class="metric-sub">${fmt(now.debt)} total debt</div></div>
+    <div class="metric-card"><div class="metric-label">Projected in ${forecastHorizon} mo</div><div class="metric-value ${end.netWorth >= now.netWorth ? 'positive' : 'negative'}">${fmt(end.netWorth)}</div><div class="metric-sub">${(nwDelta >= 0 ? '+' : '') + fmtShort(nwDelta)} net worth</div></div>
+    <div class="metric-card"><div class="metric-label">Debt in ${forecastHorizon} mo</div><div class="metric-value ${debtDelta <= 0 ? 'positive' : 'negative'}">${fmt(end.debt)}</div><div class="metric-sub">${(debtDelta <= 0 ? '' : '+') + fmtShort(debtDelta)} vs now</div></div>`;
+
+  renderForecastChart(tl.snaps);
+
+  // Debt payoff table: each liability, current, projected, payoff month.
+  const liabs = accounts.filter(a => a.isLiability).sort((a, b) => accountBalance(b) - accountBalance(a));
+  if (liabs.length === 0) {
+    document.getElementById('fc-debt-table').innerHTML = '<p style="color:var(--text-tertiary);font-size:13px;">No liabilities tracked.</p>';
+  } else {
+    const rows = liabs.map(a => {
+      const cur = accountBalance(a);
+      const proj = tl.finalBalances[a.name];
+      const pay = projectMilestone({ account: a.name, targetAmount: 0 }, forecastHorizon);
+      const payTxt = cur <= 0.005 ? '<span style="color:var(--teal-400);">Clear</span>'
+        : pay.state === 'met' ? `<span style="color:var(--teal-400);">${fmtMonthYr(pay.date)}</span>`
+        : `<span style="color:var(--text-tertiary);">beyond ${forecastHorizon} mo</span>`;
+      return `<tr>
+        <td>${a.name}</td>
+        <td style="text-align:right;">${fmt(cur)}</td>
+        <td style="text-align:right;color:${proj < cur ? 'var(--teal-400)' : 'var(--text-secondary)'};">${fmt(proj)}</td>
+        <td style="text-align:right;">${payTxt}</td>
+      </tr>`;
+    }).join('');
+    document.getElementById('fc-debt-table').innerHTML = `<table class="fc-table">
+      <thead><tr><th>Liability</th><th style="text-align:right;">Now</th><th style="text-align:right;">In ${forecastHorizon} mo</th><th style="text-align:right;">Paid off</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  }
+
+  // Milestones
+  const msEl = document.getElementById('fc-milestones');
+  if (milestones.length === 0) {
+    msEl.innerHTML = `<p style="color:var(--text-tertiary);font-size:13px;">No milestones yet. Add a savings target or debt payoff goal to track it.</p>`;
+  } else {
+    msEl.innerHTML = milestones.map(m => {
+      const r = projectMilestone(m, forecastHorizon);
+      let status, color;
+      if (r.state === 'noaccount') { status = 'account not found'; color = 'var(--red-400)'; }
+      else if (r.already) { status = 'Already met'; color = 'var(--teal-400)'; }
+      else if (r.state === 'met') {
+        const onTrack = !m.targetDate || r.date <= m.targetDate;
+        status = `${fmtMonthYr(r.date)}${m.targetDate ? (onTrack ? ' · on track' : ' · behind target') : ''}`;
+        color = onTrack ? 'var(--teal-400)' : 'var(--amber-400, #BA7517)';
+      } else { status = `Beyond ${forecastHorizon} mo (proj. ${fmt(r.projected)})`; color = 'var(--text-tertiary)'; }
+      return `<div class="ms-row">
+        <div>
+          <div class="ms-label">${m.label}</div>
+          <div class="ms-sub">${m.account} · target ${fmt(m.targetAmount || 0)}${m.targetDate ? ' by ' + fmtMonthYr(m.targetDate) : ''}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span style="font-size:12px;color:${color};font-weight:500;">${status}</span>
+          <button class="icon-btn" onclick="openEditMilestone('${m.id}')" title="Edit"><i class="ti ti-pencil"></i></button>
+          <button class="icon-btn danger" onclick="deleteMilestone('${m.id}')" title="Delete"><i class="ti ti-trash"></i></button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+  renderRecurringList();
+}
+
+function renderForecastChart(snaps) {
+  if (forecastChart) forecastChart.destroy();
+  const ctx = document.getElementById('forecast-chart');
+  if (!ctx) return;
+  forecastChart = new Chart(ctx, {
+    type: 'line',
+    data: { labels: snaps.map(s => s.label), datasets: [
+      { label: 'Net worth', data: snaps.map(s => s.netWorth), borderColor: '#534AB7', backgroundColor: 'rgba(83,74,183,0.12)', fill: true, tension: 0.25, pointRadius: 2 },
+      { label: 'Total debt', data: snaps.map(s => s.debt), borderColor: '#E24B4A', backgroundColor: 'transparent', fill: false, tension: 0.25, pointRadius: 2, borderDash: [5, 4] }
+    ]},
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: true, labels: { color: '#9898b0', font: { size: 11 }, boxWidth: 12 } } },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#9898b0', font: { size: 10 }, maxRotation: 0, autoSkip: true }, border: { display: false } },
+        y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#9898b0', font: { size: 11 }, callback: v => fmtShort(v) }, border: { display: false } }
+      }
+    }
+  });
+}
+
+// ── Recurring entries CRUD ───────────────────────────────────────────────────
+function renderRecurringList() {
+  const el = document.getElementById('recurring-list');
+  if (!el) return;
+  if (recurring.length === 0) {
+    el.innerHTML = `<p style="color:var(--text-tertiary);font-size:13px;">No recurring entries. Add your pay, bills, savings transfers, and debt payments to build the projection.</p>`;
+    return;
+  }
+  const sign = r => r.type === 'in' ? '+' : r.type === 'transfer' ? '' : '-';
+  const color = r => r.type === 'in' ? 'var(--teal-400)' : r.type === 'transfer' ? '#7F77DD' : 'var(--red-400)';
+  el.innerHTML = recurring.slice().sort((a, b) => (b.amount || 0) - (a.amount || 0)).map(r => `
+    <div class="ms-row">
+      <div>
+        <div class="ms-label">${r.label}${r.active === false ? ' <span style="color:var(--text-tertiary);font-weight:400;">(paused)</span>' : ''}</div>
+        <div class="ms-sub">${FREQ_LABELS[r.frequency] || r.frequency} · ${r.type === 'transfer' ? `${r.account} → ${r.toAccount}` : r.account || 'no account'}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span style="font-size:13px;font-weight:600;color:${color(r)};">${sign(r)}${fmtShort(r.amount || 0)}</span>
+        <button class="icon-btn" onclick="openEditRecurring('${r.id}')" title="Edit"><i class="ti ti-pencil"></i></button>
+        <button class="icon-btn danger" onclick="deleteRecurring('${r.id}')" title="Delete"><i class="ti ti-trash"></i></button>
+      </div>
+    </div>`).join('');
+}
+
+function populateRecurSelects(selCat = '', selAcc = '', selTo = '') {
+  document.getElementById('recur-category').innerHTML = CATEGORIES.map(c => `<option value="${c.id}" ${c.id === selCat ? 'selected' : ''}>${c.label}</option>`).join('');
+  const opts = sel => accounts.map(a => `<option value="${a.name}" ${a.name === sel ? 'selected' : ''}>${a.name}</option>`).join('');
+  document.getElementById('recur-account').innerHTML    = opts(selAcc);
+  document.getElementById('recur-to-account').innerHTML = opts(selTo);
+}
+
+function setRecurType(type) {
+  recurType = type;
+  document.getElementById('recur-toggle-out').className      = 'toggle-btn' + (type === 'out'      ? ' active-out'      : '');
+  document.getElementById('recur-toggle-in').className       = 'toggle-btn' + (type === 'in'       ? ' active-in'       : '');
+  document.getElementById('recur-toggle-transfer').className = 'toggle-btn' + (type === 'transfer' ? ' active-transfer' : '');
+  const isT = type === 'transfer';
+  document.getElementById('recur-to-account-group').style.display = isT ? '' : 'none';
+  document.getElementById('recur-category-group').style.display   = isT ? 'none' : '';
+  document.getElementById('recur-account-label').textContent      = isT ? 'From account' : 'Account';
+}
+
+function openAddRecurring() {
+  editingRecurringId = null;
+  document.getElementById('recur-modal-title').textContent = 'Add recurring entry';
+  document.getElementById('recur-save-btn').textContent    = 'Add entry';
+  document.getElementById('recur-label').value  = '';
+  document.getElementById('recur-amount').value = '';
+  document.getElementById('recur-frequency').value = 'monthly';
+  document.getElementById('recur-anchor').value = todayStr();
+  populateRecurSelects();
+  setRecurType('out');
+  document.getElementById('recur-modal').style.display = 'flex';
+}
+
+function openEditRecurring(id) {
+  const r = recurring.find(x => x.id === id);
+  if (!r) return;
+  editingRecurringId = id;
+  document.getElementById('recur-modal-title').textContent = 'Edit recurring entry';
+  document.getElementById('recur-save-btn').textContent    = 'Save changes';
+  document.getElementById('recur-label').value     = r.label || '';
+  document.getElementById('recur-amount').value    = r.amount || '';
+  document.getElementById('recur-frequency').value = r.frequency || 'monthly';
+  document.getElementById('recur-anchor').value    = r.anchorDate || todayStr();
+  populateRecurSelects(r.category || 'other', r.account || '', r.toAccount || '');
+  setRecurType(r.type || 'out');
+  document.getElementById('recur-modal').style.display = 'flex';
+}
+
+async function saveRecurring() {
+  const label      = document.getElementById('recur-label').value.trim();
+  const amount     = parseFloat(document.getElementById('recur-amount').value);
+  const frequency  = document.getElementById('recur-frequency').value;
+  const anchorDate = document.getElementById('recur-anchor').value;
+  const account    = document.getElementById('recur-account').value;
+  if (!label || isNaN(amount) || amount <= 0 || !anchorDate) { showToast('Fill in label, amount, and a start date.', 'error'); return; }
+  let data;
+  if (recurType === 'transfer') {
+    const toAccount = document.getElementById('recur-to-account').value;
+    if (!account || !toAccount) { showToast('Pick both accounts for a transfer.', 'error'); return; }
+    if (account === toAccount)  { showToast('A transfer needs two different accounts.', 'error'); return; }
+    data = { label, type: 'transfer', amount, account, toAccount, category: 'transfer', frequency, anchorDate, active: true };
+  } else {
+    data = { label, type: recurType, amount, account, toAccount: '', category: document.getElementById('recur-category').value, frequency, anchorDate, active: true };
+  }
+  if (editingRecurringId) {
+    const prev = recurring.find(r => r.id === editingRecurringId);
+    if (prev && prev.active === false) data.active = false;
+    await updateDoc(doc(db, 'users', currentUser.uid, 'recurring', editingRecurringId), data);
+    const idx = recurring.findIndex(r => r.id === editingRecurringId);
+    if (idx > -1) recurring[idx] = { id: editingRecurringId, ...data };
+    showToast('Recurring entry updated');
+  } else {
+    const ref = await addDoc(userCol('recurring'), data);
+    recurring.push({ id: ref.id, ...data });
+    showToast('Recurring entry added');
+  }
+  document.getElementById('recur-modal').style.display = 'none';
+  renderForecast();
+}
+
+async function deleteRecurring(id) {
+  if (!confirm('Delete this recurring entry?')) return;
+  await deleteDoc(doc(db, 'users', currentUser.uid, 'recurring', id));
+  recurring = recurring.filter(r => r.id !== id);
+  showToast('Recurring entry deleted');
+  renderForecast();
+}
+
+// ── Milestones CRUD ──────────────────────────────────────────────────────────
+function populateMilestoneAccounts(sel = '') {
+  document.getElementById('ms-account').innerHTML = accounts.map(a => `<option value="${a.name}" ${a.name === sel ? 'selected' : ''}>${a.name}${a.isLiability ? ' (debt)' : ''}</option>`).join('');
+}
+
+function openAddMilestone() {
+  editingMilestoneId = null;
+  document.getElementById('ms-modal-title').textContent = 'Add milestone';
+  document.getElementById('ms-save-btn').textContent    = 'Add milestone';
+  document.getElementById('ms-label').value  = '';
+  document.getElementById('ms-target').value = '';
+  document.getElementById('ms-date').value   = '';
+  populateMilestoneAccounts();
+  document.getElementById('ms-modal').style.display = 'flex';
+}
+
+function openEditMilestone(id) {
+  const m = milestones.find(x => x.id === id);
+  if (!m) return;
+  editingMilestoneId = id;
+  document.getElementById('ms-modal-title').textContent = 'Edit milestone';
+  document.getElementById('ms-save-btn').textContent    = 'Save changes';
+  document.getElementById('ms-label').value  = m.label || '';
+  document.getElementById('ms-target').value = m.targetAmount ?? '';
+  document.getElementById('ms-date').value   = m.targetDate || '';
+  populateMilestoneAccounts(m.account || '');
+  document.getElementById('ms-modal').style.display = 'flex';
+}
+
+async function saveMilestone() {
+  const label        = document.getElementById('ms-label').value.trim();
+  const account      = document.getElementById('ms-account').value;
+  const targetAmount = parseFloat(document.getElementById('ms-target').value);
+  const targetDate   = document.getElementById('ms-date').value || '';
+  if (!label || !account || isNaN(targetAmount)) { showToast('Fill in label, account, and target amount.', 'error'); return; }
+  const data = { label, account, targetAmount, targetDate };
+  if (editingMilestoneId) {
+    await updateDoc(doc(db, 'users', currentUser.uid, 'milestones', editingMilestoneId), data);
+    const idx = milestones.findIndex(m => m.id === editingMilestoneId);
+    if (idx > -1) milestones[idx] = { id: editingMilestoneId, ...data };
+    showToast('Milestone updated');
+  } else {
+    const ref = await addDoc(userCol('milestones'), data);
+    milestones.push({ id: ref.id, ...data });
+    showToast('Milestone added');
+  }
+  document.getElementById('ms-modal').style.display = 'none';
+  renderForecast();
+}
+
+async function deleteMilestone(id) {
+  if (!confirm('Delete this milestone?')) return;
+  await deleteDoc(doc(db, 'users', currentUser.uid, 'milestones', id));
+  milestones = milestones.filter(m => m.id !== id);
+  showToast('Milestone deleted');
+  renderForecast();
+}
+
+// ── Export projected month as an import-ready transactions CSV (item 3) ───────
+function populateExportMonths() {
+  const sel = document.getElementById('fc-export-month');
+  if (!sel || sel.options.length) return;
+  const base = new Date();
+  for (let i = 0; i < 6; i++) {
+    const d = new Date(base.getFullYear(), base.getMonth() + i, 1);
+    sel.innerHTML += `<option value="${d.getFullYear()}-${d.getMonth()}">${d.toLocaleString('en-CA', { month: 'long', year: 'numeric' })}</option>`;
+  }
+}
+
+function exportProjectionCSV() {
+  const sel = document.getElementById('fc-export-month');
+  const [year, monthIdx] = sel.value.split('-').map(Number);
+  const first = isoDate(new Date(year, monthIdx, 1, 12));
+  const last  = isoDate(new Date(year, monthIdx + 1, 0, 12));
+  let rows = [];
+  activeRecurring().forEach(r => buildOccurrences(r, first, last).forEach(o => {
+    rows.push([o.date, r.label, r.type === 'transfer' ? 'transfer' : (r.category || 'other'), r.type, (r.amount || 0).toFixed(2), r.account || '', r.toAccount || '', 'projected']);
+  }));
+  rows.sort((a, b) => a[0].localeCompare(b[0]));
+  const header = 'date,payee,category,type,amount,account,toAccount,notes';
+  const csv = [header, ...rows.map(r => r.map(csvCell).join(','))].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `mo-mint-projected-${year}-${String(monthIdx + 1).padStart(2, '0')}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showToast(rows.length ? `${rows.length} projected rows exported` : 'No recurring entries fall in that month', rows.length ? 'success' : 'error');
 }
 
 // ── CSV Import ─────────────────────────────────────────────────────────────
@@ -682,15 +1235,18 @@ async function importTransactionsCSV(event) {
   let count = 0;
   for (const row of rows) {
     if (!row.date || !row.payee || !row.amount) continue;
+    const type = row.type || 'out';
     const data = {
-      date:     row.date,
-      payee:    row.payee,
-      category: row.category || 'other',
-      type:     row.type     || 'out',
-      amount:   parseFloat(row.amount) || 0,
-      account:  row.account  || '',
-      notes:    row.notes    || ''
+      date:      row.date,
+      payee:     row.payee,
+      category:  type === 'transfer' ? 'transfer' : (row.category || 'other'),
+      type,
+      amount:    parseFloat(row.amount) || 0,
+      account:   row.account   || '',
+      toAccount: row.toAccount || '',
+      notes:     row.notes     || ''
     };
+    if (type === 'transfer' && (!data.account || !data.toAccount || data.account === data.toAccount)) continue;
     const ref = await addDoc(userCol('transactions'), data);
     transactions.unshift({ id: ref.id, ...data });
     count++;
@@ -736,10 +1292,22 @@ window.setType            = setType;
 window.saveTransaction    = saveTransaction;
 window.openAddAccount     = openAddAccount;
 window.saveAccount        = saveAccount;
-window.openEditBalance    = openEditBalance;
-window.saveBalance        = saveBalance;
+window.openEditAccount    = openEditAccount;
 window.deleteAccount      = deleteAccount;
 window.saveBudgets        = saveBudgets;
+window.loadSuggestedBudgets = loadSuggestedBudgets;
+window.moveAccount        = moveAccount;
+window.setForecastHorizon = setForecastHorizon;
+window.openAddRecurring   = openAddRecurring;
+window.openEditRecurring  = openEditRecurring;
+window.setRecurType       = setRecurType;
+window.saveRecurring      = saveRecurring;
+window.deleteRecurring    = deleteRecurring;
+window.openAddMilestone   = openAddMilestone;
+window.openEditMilestone  = openEditMilestone;
+window.saveMilestone      = saveMilestone;
+window.deleteMilestone    = deleteMilestone;
+window.exportProjectionCSV = exportProjectionCSV;
 window.closeModal         = closeModal;
 window.renderTransactions = renderTransactions;
 window.signInWithGoogle   = signInWithGoogle;

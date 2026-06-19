@@ -170,6 +170,22 @@
     .toggle-btn { flex: 1; padding: 8px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--text-secondary); font-family: var(--font); text-align: center; }
     .toggle-btn.active-in { background: rgba(29,158,117,0.15); border-color: var(--teal-400); color: var(--teal-400); font-weight: 500; }
     .toggle-btn.active-out { background: rgba(226,75,74,0.12); border-color: var(--red-400); color: var(--red-400); font-weight: 500; }
+    .toggle-btn.active-transfer { background: rgba(127,119,221,0.15); border-color: #7F77DD; color: #7F77DD; font-weight: 500; }
+    .seg { display: inline-flex; background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 2px; }
+    .seg-btn { padding: 6px 14px; font-size: 12px; border: none; background: transparent; color: var(--text-secondary); cursor: pointer; border-radius: 6px; font-family: var(--font); }
+    .seg-btn.active { background: var(--indigo-600); color: #fff; font-weight: 500; }
+    .card-header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+    .fc-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .fc-table th { text-align: left; color: var(--text-tertiary); font-weight: 500; padding: 4px 6px; border-bottom: 1px solid var(--border); text-transform: uppercase; letter-spacing: .04em; font-size: 10px; }
+    .fc-table td { padding: 8px 6px; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
+    .ms-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 9px 0; border-bottom: 1px solid var(--border); }
+    .ms-row:last-child { border-bottom: none; }
+    .ms-label { font-size: 13px; color: var(--text-primary); font-weight: 500; }
+    .ms-sub { font-size: 11px; color: var(--text-tertiary); margin-top: 2px; }
+    .account-reorder { display: flex; flex-direction: column; margin-right: 8px; }
+    .icon-btn.reorder { padding: 0; width: 22px; height: 15px; border: none; opacity: .55; }
+    .icon-btn.reorder:hover { opacity: 1; border: none; }
+    .icon-btn[disabled] { opacity: .2; cursor: default; pointer-events: none; }
     .btn { padding: 9px 18px; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; border: none; font-family: var(--font); }
     .btn-primary { background: var(--indigo-600); color: white; }
     .btn-primary:hover { background: var(--indigo-800); }
@@ -245,6 +261,7 @@
       <div class="nav-item active" data-page="dashboard"><i class="ti ti-layout-dashboard"></i> Overview</div>
       <div class="nav-item" data-page="transactions"><i class="ti ti-arrows-exchange"></i> Transactions</div>
       <div class="nav-item" data-page="budgets"><i class="ti ti-chart-pie"></i> Budgets</div>
+      <div class="nav-item" data-page="forecast"><i class="ti ti-chart-line"></i> Forecast</div>
       <div class="nav-item" data-page="accounts"><i class="ti ti-building-bank"></i> Accounts</div>
       <div class="nav-item" data-page="networth"><i class="ti ti-trending-up"></i> Net worth</div>
     </nav>
@@ -313,6 +330,7 @@
             <option value="">In & out</option>
             <option value="in">Money in</option>
             <option value="out">Money out</option>
+            <option value="transfer">Transfers</option>
           </select>
           <label class="add-btn" style="cursor:pointer;margin-left:auto;"><i class="ti ti-upload"></i> Import CSV<input type="file" accept=".csv" style="display:none;" onchange="importTransactionsCSV(event)"></label>
         </div>
@@ -326,12 +344,56 @@
         <div class="two-col">
           <div class="card">
             <div class="card-title">Spending vs budget</div>
+            <div id="budget-total" style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;"></div>
             <div id="budget-bars"></div>
           </div>
           <div class="card">
             <div class="card-title">Set monthly budgets</div>
             <div id="budget-form-list"></div>
-            <button class="btn btn-primary" style="margin-top:1rem;width:100%;" onclick="saveBudgets()">Save budgets</button>
+            <div style="display:flex;gap:8px;margin-top:1rem;">
+              <button class="btn btn-ghost" style="flex:1;" onclick="loadSuggestedBudgets()">Use suggested</button>
+              <button class="btn btn-primary" style="flex:1;" onclick="saveBudgets()">Save budgets</button>
+            </div>
+            <div style="font-size:11px;color:var(--text-tertiary);margin-top:8px;">Suggested amounts are starting estimates from your planning notes. Only housing ($3,200) is a confirmed figure. Review before saving.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Forecast / planner -->
+      <div class="page" id="page-forecast">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:1rem;flex-wrap:wrap;">
+          <div class="seg">
+            <button class="seg-btn" id="fc-h6" onclick="setForecastHorizon(6)">6 months</button>
+            <button class="seg-btn active" id="fc-h12" onclick="setForecastHorizon(12)">12 months</button>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <select class="form-select" style="width:auto;" id="fc-export-month"></select>
+            <button class="add-btn" onclick="exportProjectionCSV()"><i class="ti ti-download"></i> Export month CSV</button>
+          </div>
+        </div>
+        <div class="metric-grid" id="fc-summary" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:1.25rem;"></div>
+        <div class="card" style="margin-bottom:1.25rem;">
+          <div class="card-title">Net worth &amp; debt projection</div>
+          <div class="chart-wrap"><canvas id="forecast-chart" role="img" aria-label="Projected net worth and total debt line chart"></canvas></div>
+        </div>
+        <div class="card" style="margin-bottom:1.25rem;">
+          <div class="card-title">Debt payoff outlook</div>
+          <div id="fc-debt-table"></div>
+        </div>
+        <div class="two-col">
+          <div class="card">
+            <div class="card-header-row">
+              <div class="card-title" style="margin:0;">Milestones</div>
+              <button class="add-btn" onclick="openAddMilestone()"><i class="ti ti-plus"></i> Add</button>
+            </div>
+            <div id="fc-milestones"></div>
+          </div>
+          <div class="card">
+            <div class="card-header-row">
+              <div class="card-title" style="margin:0;">Recurring income &amp; expenses</div>
+              <button class="add-btn" onclick="openAddRecurring()"><i class="ti ti-plus"></i> Add</button>
+            </div>
+            <div id="recurring-list"></div>
           </div>
         </div>
       </div>
@@ -386,6 +448,7 @@
       <div class="mobile-nav-item active" data-page="dashboard"><i class="ti ti-layout-dashboard"></i>Overview</div>
       <div class="mobile-nav-item" data-page="transactions"><i class="ti ti-arrows-exchange"></i>Transactions</div>
       <div class="mobile-nav-item" data-page="budgets"><i class="ti ti-chart-pie"></i>Budgets</div>
+      <div class="mobile-nav-item" data-page="forecast"><i class="ti ti-chart-line"></i>Forecast</div>
       <div class="mobile-nav-item" data-page="accounts"><i class="ti ti-building-bank"></i>Accounts</div>
       <div class="mobile-nav-item" data-page="networth"><i class="ti ti-trending-up"></i>Net worth</div>
     </div>
@@ -401,6 +464,7 @@
       <div class="toggle-row">
         <button class="toggle-btn active-out" id="toggle-out" onclick="setType('out')">Money out</button>
         <button class="toggle-btn" id="toggle-in" onclick="setType('in')">Money in</button>
+        <button class="toggle-btn" id="toggle-transfer" onclick="setType('transfer')">Transfer</button>
       </div>
     </div>
     <div class="form-row">
@@ -418,14 +482,18 @@
       <input class="form-input" type="text" id="txn-payee" placeholder="e.g. Thrifty Foods">
     </div>
     <div class="form-row">
-      <div class="form-group">
+      <div class="form-group" id="txn-category-group">
         <label class="form-label">Category</label>
         <select class="form-select" id="txn-category"></select>
       </div>
-      <div class="form-group">
-        <label class="form-label">Account</label>
+      <div class="form-group" id="txn-account-group">
+        <label class="form-label" id="txn-account-label">Account</label>
         <select class="form-select" id="txn-account"></select>
       </div>
+    </div>
+    <div class="form-group" id="txn-to-account-group" style="display:none;">
+      <label class="form-label">To account</label>
+      <select class="form-select" id="txn-to-account"></select>
     </div>
     <div class="form-group">
       <label class="form-label">Notes (optional)</label>
@@ -522,23 +590,91 @@
   </div>
 </div>
 
-<!-- Edit Balance Modal -->
-<div class="modal-overlay" id="balance-modal" style="display:none;" onclick="closeModal(event,'balance-modal')">
+<!-- Recurring entry modal -->
+<div class="modal-overlay" id="recur-modal" style="display:none;" onclick="closeModal(event,'recur-modal')">
   <div class="modal" onclick="event.stopPropagation()">
-    <div class="modal-title">Re-baseline account</div>
-    <div style="font-size:14px;font-weight:500;margin-bottom:1rem;" id="bal-account-name"></div>
+    <div class="modal-title" id="recur-modal-title">Add recurring entry</div>
     <div class="form-group">
-      <label class="form-label">Opening balance ($)</label>
-      <input class="form-input" type="number" step="0.01" id="bal-amount" placeholder="0.00">
+      <label class="form-label">Type</label>
+      <div class="toggle-row">
+        <button class="toggle-btn active-out" id="recur-toggle-out" onclick="setRecurType('out')">Expense</button>
+        <button class="toggle-btn" id="recur-toggle-in" onclick="setRecurType('in')">Income</button>
+        <button class="toggle-btn" id="recur-toggle-transfer" onclick="setRecurType('transfer')">Transfer</button>
+      </div>
     </div>
     <div class="form-group">
-      <label class="form-label">Balance accurate as of</label>
-      <input class="form-input" type="date" id="bal-date" value="2026-06-01">
-      <div style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">Set this to the date your figure is correct. Transactions before it are ignored; transactions on or after it stack on top.</div>
+      <label class="form-label">Label</label>
+      <input class="form-input" type="text" id="recur-label" placeholder="e.g. Bi-weekly pay, Hydro, Scotia LOC payment">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Amount ($)</label>
+        <input class="form-input" type="number" step="0.01" min="0" id="recur-amount" placeholder="0.00">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Frequency</label>
+        <select class="form-select" id="recur-frequency">
+          <option value="weekly">Weekly</option>
+          <option value="biweekly">Every 2 weeks</option>
+          <option value="monthly" selected>Monthly</option>
+          <option value="quarterly">Quarterly</option>
+          <option value="annual">Annually</option>
+          <option value="once">One time</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group" id="recur-category-group">
+        <label class="form-label">Category</label>
+        <select class="form-select" id="recur-category"></select>
+      </div>
+      <div class="form-group">
+        <label class="form-label" id="recur-account-label">Account</label>
+        <select class="form-select" id="recur-account"></select>
+      </div>
+    </div>
+    <div class="form-group" id="recur-to-account-group" style="display:none;">
+      <label class="form-label">To account</label>
+      <select class="form-select" id="recur-to-account"></select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">First / reference date</label>
+      <input class="form-input" type="date" id="recur-anchor">
+      <div style="font-size:11px;color:var(--text-tertiary);margin-top:4px;">For repeating entries this sets the cadence: a biweekly pay anchored to a payday lands every 14 days from it.</div>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-ghost" onclick="document.getElementById('balance-modal').style.display='none'">Cancel</button>
-      <button class="btn btn-primary" onclick="saveBalance()">Update</button>
+      <button class="btn btn-ghost" onclick="document.getElementById('recur-modal').style.display='none'">Cancel</button>
+      <button class="btn btn-primary" onclick="saveRecurring()" id="recur-save-btn">Add entry</button>
+    </div>
+  </div>
+</div>
+
+<!-- Milestone modal -->
+<div class="modal-overlay" id="ms-modal" style="display:none;" onclick="closeModal(event,'ms-modal')">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-title" id="ms-modal-title">Add milestone</div>
+    <div class="form-group">
+      <label class="form-label">Label</label>
+      <input class="form-input" type="text" id="ms-label" placeholder="e.g. Emergency buffer to $1,000">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Account</label>
+      <select class="form-select" id="ms-account"></select>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Target balance ($)</label>
+        <input class="form-input" type="number" step="0.01" id="ms-target" placeholder="0.00">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Target date (optional)</label>
+        <input class="form-input" type="date" id="ms-date">
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:4px;">For a debt, the target is what you want the balance down to (usually 0). For savings, the amount you want to reach.</div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="document.getElementById('ms-modal').style.display='none'">Cancel</button>
+      <button class="btn btn-primary" onclick="saveMilestone()" id="ms-save-btn">Add milestone</button>
     </div>
   </div>
 </div>
