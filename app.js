@@ -79,6 +79,51 @@ const fmtShort = n => {
 };
 const monthName = (m, y) => new Date(y, m, 1).toLocaleString('en-CA', { month: 'long', year: 'numeric' });
 const todayStr = () => new Date().toISOString().split('T')[0];
+// Display a balance with liability-aware sign: owed shows negative, an overpaid
+// (credit) liability shows positive, never a double negative.
+const balDisplay = (isLiability, bal) => !isLiability ? fmt(bal) : (bal >= 0 ? `-${fmt(bal)}` : `+${fmt(-bal)}`);
+
+// Next calendar date a given day-of-month falls on, today or later.
+function nextDueDate(dueDay) {
+  const t = new Date(); t.setHours(0, 0, 0, 0);
+  let y = t.getFullYear(), m = t.getMonth();
+  const clamp = (yy, mm) => Math.min(dueDay, new Date(yy, mm + 1, 0).getDate());
+  let d = new Date(y, m, clamp(y, m));
+  if (d < t) { m++; if (m > 11) { m = 0; y++; } d = new Date(y, m, clamp(y, m)); }
+  return d;
+}
+
+// Business days (Mon-Fri) from today until target date.
+function businessDaysUntil(target) {
+  const d = new Date(); d.setHours(0, 0, 0, 0);
+  let n = 0;
+  while (d < target) { d.setDate(d.getDate() + 1); const wd = d.getDay(); if (wd !== 0 && wd !== 6) n++; }
+  return n;
+}
+
+function renderBillsDue() {
+  const card = document.getElementById('bills-due-card');
+  const el = document.getElementById('bills-due');
+  if (!card || !el) return;
+  const bills = accounts.filter(a => a.isLiability && a.dueDay)
+    .map(a => { const nd = nextDueDate(a.dueDay); return { a, nd, bdays: businessDaysUntil(nd) }; })
+    .sort((x, y) => x.nd - y.nd);
+  if (bills.length === 0) { card.style.display = 'none'; return; }
+  card.style.display = '';
+  el.innerHTML = bills.map(({ a, nd, bdays }) => {
+    const owed = accountBalance(a);
+    const dueStr = nd.toLocaleDateString('en-CA', { month: 'short', day: 'numeric' });
+    const color = bdays <= 5 ? 'var(--red-400)' : bdays <= 10 ? 'var(--amber-400, #BA7517)' : 'var(--text-tertiary)';
+    const when = bdays === 0 ? 'due today' : `in ${bdays} business day${bdays === 1 ? '' : 's'}`;
+    return `<div class="ms-row">
+      <div>
+        <div class="ms-label">${a.name}</div>
+        <div class="ms-sub">Due ${dueStr}${owed > 0.005 ? ' · ' + fmt(owed) + ' owing' : ''}</div>
+      </div>
+      <span style="font-size:12px;font-weight:500;color:${color};">${when}</span>
+    </div>`;
+  }).join('');
+}
 const getCat = id => CATEGORIES.find(c => c.id === id) || { label: id, color: '#5a5a72' };
 const userCol = name => collection(db, 'users', currentUser.uid, name);
 const userDocRef = path => doc(db, 'users', currentUser.uid, path);
@@ -246,7 +291,7 @@ function renderDashboard() {
   const opSub = document.getElementById('m-operating-label');
   if (primary) {
     const b = accountBalance(primary);
-    opEl.textContent = primary.isLiability ? `-${fmt(b)}` : fmt(b);
+    opEl.textContent = balDisplay(primary.isLiability, b);
     opEl.className   = 'metric-value ' + (primary.isLiability ? 'negative' : 'positive');
     opSub.textContent = primary.name;
   } else {
@@ -255,6 +300,7 @@ function renderDashboard() {
     opSub.textContent = 'Pin an account on Accounts';
   }
 
+  renderBillsDue();
   renderSpendingRing(txns);
   renderMoChart();
   renderRecentTxns(txns);
@@ -616,7 +662,7 @@ function renderAccounts() {
 function accountRowHTML(a, solo) {
   const bal      = accountBalance(a);
   const balClass = a.isLiability ? 'liability' : (bal === 0 ? 'neutral' : 'asset');
-  const balStr   = a.isLiability ? `-${fmt(bal)}` : fmt(bal);
+  const balStr   = balDisplay(a.isLiability, bal);
   const handle   = solo ? '' : `<div class="drag-handle" title="Drag to reorder"><i class="ti ti-arrows-move"></i></div>`;
   return `<div class="account-row${a.isPrimary ? ' primary' : ''}" data-id="${a.id}">
     ${handle}
@@ -679,10 +725,11 @@ function openAddAccount() {
   window._editingAccId = null;
   document.getElementById('account-modal-title').textContent = 'Add account';
   document.getElementById('acc-save-btn').textContent        = 'Add account';
-  ['acc-name','acc-balance','acc-rate','acc-notes'].forEach(id => document.getElementById(id).value = '');
+  ['acc-name','acc-balance','acc-rate','acc-notes','acc-due-day'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('acc-type').value  = 'chequing';
   document.getElementById('acc-group').value = 'liquid';
   document.getElementById('acc-opening-date').value = '2026-06-01';
+  document.getElementById('acc-paid-full').checked = false;
   document.getElementById('account-modal').style.display = 'flex';
 }
 
@@ -694,15 +741,17 @@ async function saveAccount() {
   const rate  = document.getElementById('acc-rate').value.trim();
   const notes = document.getElementById('acc-notes').value.trim();
   const openingAsOf = document.getElementById('acc-opening-date').value || '2026-06-01';
+  const dueDay = parseInt(document.getElementById('acc-due-day').value) || null;
+  const paidInFull = document.getElementById('acc-paid-full').checked;
   const isLiability = ['loc','credit-card','other-liability'].includes(group);
   if (!name) { showToast('Please enter an account name.', 'error'); return; }
-  const data = { name, type, group, balance, openingAsOf, rate, notes, isLiability };
+  const data = { name, type, group, balance, openingAsOf, dueDay, paidInFull, rate, notes, isLiability };
   if (window._editingAccId) {
     const prev = accounts.find(a => a.id === window._editingAccId);
     const oldName = prev ? prev.name : null;
     await updateDoc(doc(db, 'users', currentUser.uid, 'accounts', window._editingAccId), data);
     const idx = accounts.findIndex(a => a.id === window._editingAccId);
-    if (idx > -1) accounts[idx] = { id: window._editingAccId, ...data };
+    if (idx > -1) accounts[idx] = { ...prev, ...data, id: window._editingAccId };
     if (oldName && oldName !== name) await relinkAccountName(oldName, name);
     showToast('Account updated');
   } else {
@@ -741,6 +790,8 @@ function openEditAccount(id) {
   document.getElementById('acc-rate').value         = a.rate  || '';
   document.getElementById('acc-notes').value        = a.notes || '';
   document.getElementById('acc-opening-date').value = a.openingAsOf || '2026-06-01';
+  document.getElementById('acc-due-day').value = a.dueDay || '';
+  document.getElementById('acc-paid-full').checked = !!a.paidInFull;
   document.getElementById('account-modal').style.display = 'flex';
 }
 
@@ -832,7 +883,7 @@ function renderNetworth() {
         <div style="font-size:10px;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">${GROUP_LABELS[g]}</div>
         ${groups[g].map(a => `<div style="display:flex;justify-content:space-between;font-size:12px;padding:5px 0;border-bottom:1px solid var(--border);">
           <span style="color:var(--text-secondary);">${a.name.split('—')[0].trim()}</span>
-          <span style="font-weight:500;color:${a.isLiability ? 'var(--red-400)' : 'var(--teal-400)'};">${a.isLiability ? '-' : ''}${fmt(accountBalance(a))}</span>
+          <span style="font-weight:500;color:${a.isLiability ? 'var(--red-400)' : 'var(--teal-400)'};">${balDisplay(a.isLiability, accountBalance(a))}</span>
         </div>`).join('')}
       </div>`).join('');
   }
@@ -1023,10 +1074,13 @@ function renderForecast() {
 
   renderForecastChart(tl.snaps);
 
-  // Debt payoff table: each liability, current, projected, payoff month.
-  const liabs = accounts.filter(a => a.isLiability).sort((a, b) => accountBalance(b) - accountBalance(a));
+  // Debt payoff table: revolving liabilities being paid down. Accounts marked
+  // "paid in full monthly" are excluded since they have no meaningful payoff date.
+  const allLiabs = accounts.filter(a => a.isLiability);
+  const liabs = allLiabs.filter(a => !a.paidInFull).sort((a, b) => accountBalance(b) - accountBalance(a));
+  const hiddenCount = allLiabs.length - liabs.length;
   if (liabs.length === 0) {
-    document.getElementById('fc-debt-table').innerHTML = '<p style="color:var(--text-tertiary);font-size:13px;">No liabilities tracked.</p>';
+    document.getElementById('fc-debt-table').innerHTML = '<p style="color:var(--text-tertiary);font-size:13px;">No revolving debt to track.</p>';
   } else {
     const rows = liabs.map(a => {
       const cur = accountBalance(a);
@@ -1044,7 +1098,7 @@ function renderForecast() {
     }).join('');
     document.getElementById('fc-debt-table').innerHTML = `<table class="fc-table">
       <thead><tr><th>Liability</th><th style="text-align:right;">Now</th><th style="text-align:right;">In ${forecastHorizon} mo</th><th style="text-align:right;">Paid off</th></tr></thead>
-      <tbody>${rows}</tbody></table>`;
+      <tbody>${rows}</tbody></table>${hiddenCount ? `<div style="font-size:11px;color:var(--text-tertiary);margin-top:8px;">${hiddenCount} paid-in-full account${hiddenCount === 1 ? '' : 's'} hidden from the payoff outlook.</div>` : ''}`;
   }
 
   // Milestones
@@ -1350,6 +1404,8 @@ async function importTransactionsCSV(event) {
   // after import, and a re-import shouldn't duplicate something you recategorized.
   const sig = t => [t.date, (t.payee || '').trim().toLowerCase(), (parseFloat(t.amount) || 0).toFixed(2), t.type || 'out', (t.account || '').trim(), (t.toAccount || '').trim()].join('|');
   const existing = new Set(transactions.map(sig)); // snapshot before import
+  const known = new Set(accounts.map(a => a.name));
+  const unknown = new Set();
   let count = 0, skipped = 0;
   for (const row of rows) {
     if (!row.date || !row.payee || !row.amount) continue;
@@ -1360,11 +1416,12 @@ async function importTransactionsCSV(event) {
       category:  type === 'transfer' ? 'transfer' : (row.category || 'other'),
       type,
       amount:    parseFloat(row.amount) || 0,
-      account:   row.account   || '',
-      toAccount: row.toAccount || '',
+      account:   (row.account   || '').trim(),
+      toAccount: (row.toAccount || '').trim(),
       notes:     row.notes     || ''
     };
     if (type === 'transfer' && (!data.account || !data.toAccount || data.account === data.toAccount)) continue;
+    [data.account, data.toAccount].forEach(n => { if (n && !known.has(n)) unknown.add(n); });
     if (existing.has(sig(data))) { skipped++; continue; } // already present from a prior import
     const ref = await addDoc(userCol('transactions'), data);
     transactions.unshift({ id: ref.id, ...data });
@@ -1372,7 +1429,9 @@ async function importTransactionsCSV(event) {
   }
   transactions.sort((a, b) => b.date.localeCompare(a.date));
   event.target.value = '';
-  showToast(skipped ? `${count} imported, ${skipped} skipped as duplicates` : `${count} transactions imported`);
+  let msg = skipped ? `${count} imported, ${skipped} skipped as duplicates` : `${count} transactions imported`;
+  if (unknown.size) msg += ` · ${unknown.size} reference unknown accounts (won't update a balance): ${[...unknown].slice(0, 3).join(', ')}${unknown.size > 3 ? '…' : ''}`;
+  showToast(msg, unknown.size ? 'error' : 'success');
   renderTransactions();
   renderDashboard();
   refreshBalancesIfVisible();
