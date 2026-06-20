@@ -939,12 +939,19 @@ function activeRecurring() { return recurring.filter(r => r.active !== false); }
 // on the 1st of each FULL future month from the operating account, so the
 // forecast accounts for variable everyday spending without double-counting
 // scheduled items or the current partial month's actuals.
-function budgetSpendEvents(today, endStr) {
-  if (!forecastSettings.includeBudgets || !forecastSettings.budgetAccount) return [];
+// The monthly variable-spending lump pulled from budgets: categories that are
+// not income/savings/debt/transfer and are not already covered by a recurring
+// expense entry (so nothing double-counts).
+function budgetSpendMonthlyTotal() {
+  if (!forecastSettings.includeBudgets || !forecastSettings.budgetAccount) return 0;
   const covered = new Set(activeRecurring().filter(r => r.type === 'out' && r.category).map(r => r.category));
   const skip = new Set(['income', 'savings', 'debt', 'transfer']);
-  const total = Object.keys(budgets).reduce((s, c) =>
+  return Object.keys(budgets).reduce((s, c) =>
     (!skip.has(c) && !covered.has(c) && budgets[c] > 0) ? s + budgets[c] : s, 0);
+}
+
+function budgetSpendEvents(today, endStr) {
+  const total = budgetSpendMonthlyTotal();
   if (total <= 0) return [];
   const events = [];
   const start = new Date(today + 'T12:00:00');
@@ -1077,7 +1084,7 @@ function renderForecast() {
   // Debt payoff table: revolving liabilities being paid down. Accounts marked
   // "paid in full monthly" are excluded since they have no meaningful payoff date.
   const allLiabs = accounts.filter(a => a.isLiability);
-  const liabs = allLiabs.filter(a => !a.paidInFull).sort((a, b) => accountBalance(b) - accountBalance(a));
+  const liabs = allLiabs.filter(a => !a.paidInFull && !a.isPrimary).sort((a, b) => accountBalance(b) - accountBalance(a));
   const hiddenCount = allLiabs.length - liabs.length;
   if (liabs.length === 0) {
     document.getElementById('fc-debt-table').innerHTML = '<p style="color:var(--text-tertiary);font-size:13px;">No revolving debt to track.</p>';
@@ -1098,7 +1105,7 @@ function renderForecast() {
     }).join('');
     document.getElementById('fc-debt-table').innerHTML = `<table class="fc-table">
       <thead><tr><th>Liability</th><th style="text-align:right;">Now</th><th style="text-align:right;">In ${forecastHorizon} mo</th><th style="text-align:right;">Paid off</th></tr></thead>
-      <tbody>${rows}</tbody></table>${hiddenCount ? `<div style="font-size:11px;color:var(--text-tertiary);margin-top:8px;">${hiddenCount} paid-in-full account${hiddenCount === 1 ? '' : 's'} hidden from the payoff outlook.</div>` : ''}`;
+      <tbody>${rows}</tbody></table>${hiddenCount ? `<div style="font-size:11px;color:var(--text-tertiary);margin-top:8px;">${hiddenCount} account${hiddenCount === 1 ? '' : 's'} hidden from the payoff outlook (your operating account and any marked paid-in-full).</div>` : ''}`;
   }
 
   // Milestones
@@ -1157,13 +1164,9 @@ function renderForecastChart(snaps) {
 function renderRecurringList() {
   const el = document.getElementById('recurring-list');
   if (!el) return;
-  if (recurring.length === 0) {
-    el.innerHTML = `<p style="color:var(--text-tertiary);font-size:13px;">No recurring entries. Add your pay, bills, savings transfers, and debt payments to build the projection.</p>`;
-    return;
-  }
   const sign = r => r.type === 'in' ? '+' : r.type === 'transfer' ? '' : '-';
   const color = r => r.type === 'in' ? 'var(--teal-400)' : r.type === 'transfer' ? '#7F77DD' : 'var(--red-400)';
-  el.innerHTML = recurring.slice().sort((a, b) => (b.amount || 0) - (a.amount || 0)).map(r => `
+  let rowsHtml = recurring.slice().sort((a, b) => (b.amount || 0) - (a.amount || 0)).map(r => `
     <div class="ms-row">
       <div>
         <div class="ms-label">${r.label}${r.active === false ? ' <span style="color:var(--text-tertiary);font-weight:400;">(paused)</span>' : ''}</div>
@@ -1175,6 +1178,18 @@ function renderRecurringList() {
         <button class="icon-btn danger" onclick="deleteRecurring('${r.id}')" title="Delete"><i class="ti ti-trash"></i></button>
       </div>
     </div>`).join('');
+  // Read-only line showing the budget feed, so it's visible that budgets are counted.
+  const budgetTotal = budgetSpendMonthlyTotal();
+  if (budgetTotal > 0) {
+    rowsHtml = `<div class="ms-row" style="background:rgba(127,119,221,0.06);border-radius:8px;padding-left:8px;padding-right:8px;">
+      <div>
+        <div class="ms-label">Budgeted everyday spending</div>
+        <div class="ms-sub">From your Budgets · Monthly · ${forecastSettings.budgetAccount}</div>
+      </div>
+      <span style="font-size:13px;font-weight:600;color:var(--red-400);" title="Sum of variable budget categories not already covered by a recurring entry">-${fmtShort(budgetTotal)}</span>
+    </div>` + rowsHtml;
+  }
+  el.innerHTML = rowsHtml || `<p style="color:var(--text-tertiary);font-size:13px;">No recurring entries. Add your pay, bills, savings transfers, and debt payments to build the projection.</p>`;
 }
 
 function populateRecurSelects(selCat = '', selAcc = '', selTo = '') {
