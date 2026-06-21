@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Interest Rate Comparison</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #F5F5F2;
+    color: #1A1A1A;
+    min-height: 100vh;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 3rem 1rem;
+  }
+
+  .wrap {
+    width: 100%;
+    max-width: 640px;
+  }
+
+  .page-label {
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #888;
+    margin-bottom: 0.35rem;
+  }
+
+  .page-title {
+    font-size: 22px;
+    font-weight: 500;
+    color: #1A1A1A;
+    margin-bottom: 2rem;
+  }
+
+  .controls {
+    margin-bottom: 1.75rem;
+  }
+
+  .ctrl-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 0.85rem;
+  }
+
+  .ctrl-label {
+    font-size: 13px;
+    color: #555;
+    min-width: 190px;
+  }
+
+  input[type="range"] {
+    flex: 1;
+    height: 4px;
+    -webkit-appearance: none;
+    appearance: none;
+    background: #D8D8D5;
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #1A1A1A;
+    cursor: pointer;
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: #1A1A1A;
+    border: none;
+    cursor: pointer;
+  }
+
+  .ctrl-val {
+    font-family: "Menlo", "Consolas", "Courier New", monospace;
+    font-size: 13px;
+    font-weight: 500;
+    min-width: 56px;
+    text-align: right;
+  }
+
+  .cards-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin-bottom: 1.25rem;
+  }
+
+  .card {
+    background: #fff;
+    border: 1px solid #E0E0DC;
+    border-radius: 12px;
+    padding: 1.25rem;
+  }
+
+  .card-head {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 1rem;
+  }
+
+  .card-head.bad { color: #B03020; }
+  .card-head.good { color: #1A6E3F; }
+
+  .metric-annual {
+    font-family: "Menlo", "Consolas", "Courier New", monospace;
+    font-size: 24px;
+    font-weight: 500;
+    margin-bottom: 0.75rem;
+  }
+
+  .metric-annual.bad { color: #B03020; }
+  .metric-annual.good { color: #1A6E3F; }
+
+  .field-row {
+    margin-bottom: 0.5rem;
+  }
+
+  .field-label {
+    font-size: 11px;
+    color: #888;
+    margin-bottom: 2px;
+  }
+
+  .field-val {
+    font-family: "Menlo", "Consolas", "Courier New", monospace;
+    font-size: 13px;
+    color: #333;
+  }
+
+  hr.divider {
+    border: none;
+    border-top: 1px solid #EBEBEA;
+    margin: 0.85rem 0;
+  }
+
+  .savings-box {
+    background: #fff;
+    border: 1px solid #E0E0DC;
+    border-radius: 12px;
+    padding: 1.5rem;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 1rem;
+    align-items: center;
+    margin-bottom: 1.5rem;
+  }
+
+  .savings-side {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .savings-side-val {
+    font-family: "Menlo", "Consolas", "Courier New", monospace;
+    font-size: 18px;
+    font-weight: 500;
+    color: #1A6E3F;
+  }
+
+  .savings-side-label {
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .savings-side.right {
+    text-align: right;
+  }
+
+  .savings-center {
+    text-align: center;
+    padding: 0 1rem;
+    border-left: 1px solid #EBEBEA;
+    border-right: 1px solid #EBEBEA;
+  }
+
+  .savings-main-val {
+    font-family: "Menlo", "Consolas", "Courier New", monospace;
+    font-size: 36px;
+    font-weight: 500;
+    color: #1A6E3F;
+    line-height: 1;
+  }
+
+  .savings-main-label {
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-top: 5px;
+  }
+
+  .bar-section {
+    margin-bottom: 1.75rem;
+  }
+
+  .bar-wrap {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    height: 80px;
+    margin-bottom: 6px;
+  }
+
+  .bar {
+    border-radius: 3px 3px 0 0;
+    transition: height 0.25s ease;
+    flex: 1;
+  }
+
+  .bar.bad  { background: #C0392B; opacity: 0.75; }
+  .bar.good { background: #1A7A4A; opacity: 0.75; }
+
+  .bar-labels {
+    display: flex;
+    gap: 10px;
+  }
+
+  .bar-labels span {
+    flex: 1;
+    font-size: 11px;
+    color: #888;
+  }
+
+  .context-note {
+    font-size: 12px;
+    color: #999;
+    border-top: 1px solid #E8E8E6;
+    padding-top: 1rem;
+    line-height: 1.7;
+  }
+
+  .context-note code {
+    font-family: "Menlo", "Consolas", "Courier New", monospace;
+    font-size: 11px;
+    color: #666;
+  }
+
+  @media print {
+    body { background: white; padding: 1rem; }
+    input[type="range"] { display: none; }
+    .ctrl-row { justify-content: space-between; }
+  }
+
+  @media (max-width: 520px) {
+    .cards-row { grid-template-columns: 1fr; }
+    .savings-box { grid-template-columns: 1fr; border-left: none; border-right: none; }
+    .savings-center { border: none; padding: 0; }
+    .savings-side.right { text-align: left; }
+    .ctrl-label { min-width: 140px; font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="page-label">Debt consolidation</p>
+  <h1 class="page-title">Interest rate comparison</h1>
+
+  <div class="controls">
+    <div class="ctrl-row">
+      <span class="ctrl-label">Balance</span>
+      <input type="range" id="bal" min="10000" max="100000" step="1000" value="50000">
+      <span class="ctrl-val" id="bal-out">$50,000</span>
+    </div>
+    <div class="ctrl-row">
+      <span class="ctrl-label">Current rate (credit cards)</span>
+      <input type="range" id="rate-cc" min="8" max="30" step="0.5" value="20">
+      <span class="ctrl-val" id="rate-cc-out" style="color:#B03020">20.0%</span>
+    </div>
+    <div class="ctrl-row">
+      <span class="ctrl-label">Proposed rate (LOC)</span>
+      <input type="range" id="rate-loc" min="4" max="16" step="0.25" value="8.8">
+      <span class="ctrl-val" id="rate-loc-out" style="color:#1A6E3F">8.8%</span>
+    </div>
+  </div>
+
+  <div class="cards-row">
+    <div class="card">
+      <p class="card-head bad">Credit cards — now</p>
+      <div class="metric-annual bad" id="cc-annual">$10,000</div>
+      <div class="field-label">per year in interest</div>
+      <hr class="divider">
+      <div class="field-row">
+        <div class="field-label">Monthly interest</div>
+        <div class="field-val" id="cc-monthly">$833</div>
+      </div>
+    </div>
+    <div class="card">
+      <p class="card-head good">Personal LOC — proposed</p>
+      <div class="metric-annual good" id="loc-annual">$4,400</div>
+      <div class="field-label">per year in interest</div>
+      <hr class="divider">
+      <div class="field-row">
+        <div class="field-label">Monthly interest</div>
+        <div class="field-val" id="loc-monthly">$367</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="savings-box">
+    <div class="savings-side">
+      <div class="savings-side-val" id="save-annual">$5,600</div>
+      <div class="savings-side-label">saved per year</div>
+    </div>
+    <div class="savings-center">
+      <div class="savings-main-val" id="save-monthly">$467</div>
+      <div class="savings-main-label">saved per month</div>
+    </div>
+    <div class="savings-side right">
+      <div class="savings-side-val" id="save-5yr">$28,000</div>
+      <div class="savings-side-label">over 5 years</div>
+    </div>
+  </div>
+
+  <div class="bar-section">
+    <div class="bar-wrap">
+      <div class="bar bad" id="bar-bad"></div>
+      <div class="bar good" id="bar-good"></div>
+    </div>
+    <div class="bar-labels">
+      <span>Credit cards</span>
+      <span>Personal LOC</span>
+    </div>
+  </div>
+
+  <div class="context-note">
+    Canada prime rate: <code>4.45%</code> &nbsp;·&nbsp;
+    Typical unsecured LOC: <code>6.5–10.5%</code> &nbsp;·&nbsp;
+    Island Savings benchmark: <code>8.8%</code><br>
+    Major banks advertised starting rates: <code>6–10%</code> for well-qualified borrowers
+  </div>
+</div>
+
+<script>
+  function fmt(n) {
+    return '$' + Math.round(n).toLocaleString('en-CA');
+  }
+
+  function calc() {
+    var bal     = +document.getElementById('bal').value;
+    var rCC     = +document.getElementById('rate-cc').value / 100;
+    var rLOC    = +document.getElementById('rate-loc').value / 100;
+    var ccAnn   = bal * rCC;
+    var locAnn  = bal * rLOC;
+    var saveAnn = ccAnn - locAnn;
+
+    document.getElementById('bal-out').textContent     = fmt(bal);
+    document.getElementById('rate-cc-out').textContent = parseFloat(document.getElementById('rate-cc').value).toFixed(1) + '%';
+    document.getElementById('rate-loc-out').textContent = parseFloat(document.getElementById('rate-loc').value).toFixed(2).replace(/\.?0+$/, '') + '%';
+
+    document.getElementById('cc-annual').textContent   = fmt(ccAnn);
+    document.getElementById('cc-monthly').textContent  = fmt(ccAnn / 12);
+    document.getElementById('loc-annual').textContent  = fmt(locAnn);
+    document.getElementById('loc-monthly').textContent = fmt(locAnn / 12);
+
+    document.getElementById('save-annual').textContent  = fmt(saveAnn);
+    document.getElementById('save-monthly').textContent = fmt(saveAnn / 12);
+    document.getElementById('save-5yr').textContent     = fmt(saveAnn * 5);
+
+    var maxH  = 80;
+    var goodH = Math.max(4, Math.round((locAnn / ccAnn) * maxH));
+    document.getElementById('bar-bad').style.height  = maxH + 'px';
+    document.getElementById('bar-good').style.height = goodH + 'px';
+  }
+
+  document.getElementById('bal').addEventListener('input', calc);
+  document.getElementById('rate-cc').addEventListener('input', calc);
+  document.getElementById('rate-loc').addEventListener('input', calc);
+  calc();
+</script>
+</body>
+</html>
