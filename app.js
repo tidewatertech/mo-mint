@@ -83,6 +83,13 @@ const todayStr = () => new Date().toISOString().split('T')[0];
 // (credit) liability shows positive, never a double negative.
 const balDisplay = (isLiability, bal) => !isLiability ? fmt(bal) : (bal >= 0 ? `-${fmt(bal)}` : `+${fmt(-bal)}`);
 
+// Parse an account's annual interest rate (e.g. "8.94%") to a monthly decimal.
+function monthlyRate(a) {
+  if (!a || !a.rate) return 0;
+  const n = parseFloat(String(a.rate).replace(/[^0-9.]/g, ''));
+  return isNaN(n) ? 0 : (n / 100) / 12;
+}
+
 // Next calendar date a given day-of-month falls on, today or later.
 function nextDueDate(dueDay) {
   const t = new Date(); t.setHours(0, 0, 0, 0);
@@ -988,6 +995,7 @@ function projectTimeline(horizonMonths) {
     return { netWorth: nw, debt, liquid };
   };
   const events = futureEvents(today, endStr);
+  const rates = {}; accounts.forEach(a => { rates[a.name] = monthlyRate(a); });
   const snaps = [{ label: 'Now', date: today, ...totals(bal) }];
   let ei = 0;
   for (let m = 0; m < horizonMonths; m++) {
@@ -997,6 +1005,8 @@ function projectTimeline(horizonMonths) {
       accounts.forEach(a => { bal[a.name] += eventEffectOn(ev, a.name, a.isLiability); });
       ei++;
     }
+    // Accrue one month of interest/growth on positive balances (debt grows owed, assets grow value).
+    accounts.forEach(a => { if (rates[a.name] && bal[a.name] > 0) bal[a.name] *= (1 + rates[a.name]); });
     snaps.push({ label: fmtMonthYr(mEnd), date: mEnd, ...totals(bal) });
   }
   return { today, endStr, snaps, finalBalances: { ...bal } };
@@ -1013,10 +1023,17 @@ function projectMilestone(mil, horizonMonths) {
   const meets = b => isLiab ? b <= target + 0.005 : b >= target - 0.005;
   const current = balanceAsOf(acct, today);
   if (meets(current)) return { state: 'met', date: today, current, already: true };
-  let bal = current;
-  for (const ev of futureEvents(today, endStr)) {
-    bal += eventEffectOn(ev, acct.name, isLiab);
-    if (meets(bal)) return { state: 'met', date: ev.date, current };
+  const r = monthlyRate(acct);
+  const events = futureEvents(today, endStr);
+  let bal = current, ei = 0;
+  for (let m = 0; m < horizonMonths; m++) {
+    const mEnd = isoDate(new Date(start.getFullYear(), start.getMonth() + m + 1, 0, 12));
+    while (ei < events.length && events[ei].date <= mEnd) {
+      bal += eventEffectOn(events[ei], acct.name, isLiab);
+      if (meets(bal)) return { state: 'met', date: events[ei].date, current };
+      ei++;
+    }
+    if (r && bal > 0) { bal *= (1 + r); if (meets(bal)) return { state: 'met', date: mEnd, current }; }
   }
   return { state: 'beyond', current, projected: bal };
 }
@@ -1092,14 +1109,18 @@ function renderForecast() {
     const rows = liabs.map(a => {
       const cur = accountBalance(a);
       const proj = tl.finalBalances[a.name];
-      const pay = projectMilestone({ account: a.name, targetAmount: 0 }, forecastHorizon);
-      const payTxt = cur <= 0.005 ? '<span style="color:var(--teal-400);">Clear</span>'
-        : pay.state === 'met' ? `<span style="color:var(--teal-400);">${fmtMonthYr(pay.date)}</span>`
-        : `<span style="color:var(--text-tertiary);">beyond ${forecastHorizon} mo</span>`;
+      // Real payoff date: project up to 5 years (with interest), independent of the display horizon.
+      const pay = projectMilestone({ account: a.name, targetAmount: 0 }, 60);
+      let payTxt;
+      if (cur <= 0.005)              payTxt = '<span style="color:var(--teal-400);">Clear</span>';
+      else if (pay.state === 'met')  payTxt = `<span style="color:var(--teal-400);">${fmtMonthYr(pay.date)}</span>`;
+      else if (proj >= cur - 0.005)  payTxt = '<span style="color:var(--red-400);">not decreasing</span>';
+      else                           payTxt = '<span style="color:var(--text-tertiary);">5+ yrs</span>';
+      const projColor = proj < cur - 0.005 ? 'var(--teal-400)' : proj > cur + 0.005 ? 'var(--red-400)' : 'var(--text-secondary)';
       return `<tr>
         <td>${a.name}</td>
         <td style="text-align:right;">${fmt(cur)}</td>
-        <td style="text-align:right;color:${proj < cur ? 'var(--teal-400)' : 'var(--text-secondary)'};">${fmt(proj)}</td>
+        <td style="text-align:right;color:${projColor};">${fmt(proj)}</td>
         <td style="text-align:right;">${payTxt}</td>
       </tr>`;
     }).join('');
