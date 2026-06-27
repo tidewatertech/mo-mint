@@ -53,6 +53,30 @@ const GROUP_LABELS = {
   'other-liability': 'Other liabilities'
 };
 
+// Canonical group order for account dropdowns.
+const GROUP_ORDER = ['liquid', 'loc', 'credit-card', 'registered', 'other-asset', 'other-liability'];
+
+// Build grouped <optgroup> options for any account select. Accounts within each
+// group are sorted by their sortOrder. Pass an optional annotation function to
+// append extra text to each label (e.g. " (debt)" for milestone selects).
+function groupedAccOpts(sel = '', annotate = null) {
+  const grouped = {};
+  GROUP_ORDER.forEach(g => { grouped[g] = []; });
+  accounts.forEach(a => {
+    const g = GROUP_ORDER.includes(a.group) ? a.group : 'other-asset';
+    grouped[g].push(a);
+  });
+  return GROUP_ORDER.filter(g => grouped[g].length > 0).map(g => {
+    const opts = grouped[g]
+      .slice().sort((a, b) => (a.sortOrder ?? 9999) - (b.sortOrder ?? 9999) || a.name.localeCompare(b.name))
+      .map(a => {
+        const label = a.name + (annotate ? annotate(a) : '');
+        return `<option value="${a.name}" ${a.name === sel ? 'selected' : ''}>${label}</option>`;
+      }).join('');
+    return `<optgroup label="${GROUP_LABELS[g] || g}">${opts}</optgroup>`;
+  }).join('');
+}
+
 // Starting-point monthly budgets derived from the Financial Planning context.
 // Housing ($3,200 full rent) is the one confirmed figure; the rest are
 // estimates to be corrected. Loaded only on request, never silently saved.
@@ -373,11 +397,20 @@ function refreshBalancesIfVisible() {
 }
 
 function renderSpendingRing(txns) {
-  const outTxns = txns.filter(t => t.type === 'out');
-  const total   = outTxns.reduce((s, t) => s + t.amount, 0);
-  const byCat   = {};
-  outTxns.forEach(t => { byCat[t.category] = (byCat[t.category] || 0) + t.amount; });
-  const sorted  = Object.entries(byCat).sort((a, b) => b[1] - a[1]).slice(0, 6);
+  // Net per category: out adds, in with a spending category subtracts (refunds).
+  const byCat = {};
+  txns.forEach(t => {
+    if (t.type === 'transfer') return;
+    if (t.type === 'out') {
+      byCat[t.category] = (byCat[t.category] || 0) + t.amount;
+    } else if (t.type === 'in' && t.category !== 'income') {
+      byCat[t.category] = (byCat[t.category] || 0) - t.amount;
+    }
+  });
+  // Drop categories with net <= 0 (fully reimbursed or over-reimbursed).
+  Object.keys(byCat).forEach(c => { if (byCat[c] <= 0) delete byCat[c]; });
+  const total  = Object.values(byCat).reduce((s, v) => s + v, 0);
+  const sorted = Object.entries(byCat).sort((a, b) => b[1] - a[1]).slice(0, 6);
   const svg     = document.getElementById('spending-ring');
   const legend  = document.getElementById('ring-legend');
   svg.innerHTML = '';
@@ -462,7 +495,7 @@ function renderTransactions() {
   const cat  = document.getElementById('filter-category').value;
   const acc  = document.getElementById('filter-account').value;
   const type = document.getElementById('filter-type').value;
-  const txns = getMonthTxns(currentMonth, currentYear).filter(t => {
+  let txns = getMonthTxns(currentMonth, currentYear).filter(t => {
     if (cat  && t.category !== cat)  return false;
     if (acc  && t.account !== acc && t.toAccount !== acc) return false;
     if (type && t.type     !== type) return false;
@@ -473,6 +506,36 @@ function renderTransactions() {
     el.innerHTML = `<div class="empty-state"><i class="ti ti-receipt-off"></i><p>No transactions match your filters.</p></div>`;
     return;
   }
+
+  // Running balance mode: active when an account is selected.
+  if (acc) {
+    const acct = accounts.find(a => a.name === acc);
+    if (acct) {
+      // Sort oldest → newest so the balance accumulates forward.
+      txns = txns.slice().sort((a, b) => a.date.localeCompare(b.date));
+      // Opening balance = account balance at end of the previous month.
+      const prevMonthEnd = isoDate(new Date(currentYear, currentMonth, 0, 12));
+      let runBal = balanceAsOf(acct, prevMonthEnd);
+      const openLabel = new Date(currentYear, currentMonth, 1).toLocaleDateString('en-CA', { month: 'long', year: 'numeric' });
+      const openingRow = `<div class="txn-row" style="opacity:0.55;pointer-events:none;">
+        <div class="txn-icon" style="background:var(--bg-input);"><i class="ti ti-bookmark" style="color:var(--text-tertiary);"></i></div>
+        <div class="txn-info">
+          <div class="txn-name" style="color:var(--text-secondary);">Opening balance</div>
+          <div class="txn-meta">Start of ${openLabel}</div>
+        </div>
+        <div class="txn-right">
+          <div class="txn-amount" style="color:var(--text-secondary);">${balDisplay(acct.isLiability, runBal)}</div>
+        </div>
+      </div>`;
+      const rows = txns.map(t => {
+        runBal += eventEffectOn(t, acct.name, acct.isLiability);
+        return txnRowHTML(t, runBal, acct.isLiability);
+      });
+      el.innerHTML = openingRow + rows.join('');
+      return;
+    }
+  }
+
   el.innerHTML = txns.map(t => txnRowHTML(t)).join('');
 }
 
@@ -480,11 +543,16 @@ function populateFilters() {
   const catSel = document.getElementById('filter-category');
   const accSel = document.getElementById('filter-account');
   if (catSel.options.length <= 1) CATEGORIES.forEach(c => { catSel.innerHTML += `<option value="${c.id}">${c.label}</option>`; });
-  if (accSel.options.length <= 1) accounts.forEach(a => { accSel.innerHTML += `<option value="${a.name}">${a.name}</option>`; });
+  // Rebuild account filter each time so it stays in sync if accounts change.
+  const prevAcc = accSel.value;
+  accSel.innerHTML = '<option value="">All accounts</option>' + groupedAccOpts(prevAcc);
 }
 
-function txnRowHTML(t) {
+function txnRowHTML(t, runBal = null, isLiab = false) {
   const dateStr = new Date(t.date + 'T12:00:00').toLocaleDateString('en-CA', { month: 'short', day: 'numeric' });
+  const balLine = runBal !== null
+    ? `<div style="font-size:11px;color:var(--text-tertiary);text-align:right;margin-top:1px;">${balDisplay(isLiab, runBal)}</div>`
+    : '';
   if (t.type === 'transfer') {
     return `<div class="txn-row">
       <div class="txn-icon" style="background:#7F77DD22;"><i class="ti ti-arrows-exchange" style="color:#7F77DD"></i></div>
@@ -493,7 +561,10 @@ function txnRowHTML(t) {
         <div class="txn-meta">Transfer · ${dateStr} · ${t.account} → ${t.toAccount}</div>
       </div>
       <div class="txn-right">
-        <div class="txn-amount" style="color:#7F77DD;">${fmt(t.amount)}</div>
+        <div>
+          <div class="txn-amount" style="color:#7F77DD;">${fmt(t.amount)}</div>
+          ${balLine}
+        </div>
         <div class="txn-actions">
           <button class="icon-btn" onclick="openEditTxn('${t.id}')"     title="Edit"><i class="ti ti-edit"></i></button>
           <button class="icon-btn danger" onclick="deleteTxn('${t.id}')" title="Delete"><i class="ti ti-trash"></i></button>
@@ -509,7 +580,10 @@ function txnRowHTML(t) {
       <div class="txn-meta">${cat.label} · ${dateStr}${t.account ? ' · ' + t.account.split('—')[0].trim() : ''}</div>
     </div>
     <div class="txn-right">
-      <div class="txn-amount ${t.type}">${t.type === 'in' ? '+' : '-'}${fmt(t.amount)}</div>
+      <div>
+        <div class="txn-amount ${t.type}">${t.type === 'in' ? '+' : '-'}${fmt(t.amount)}</div>
+        ${balLine}
+      </div>
       <div class="txn-actions">
         <button class="icon-btn" onclick="openRecat('${t.id}')"       title="Recategorize"><i class="ti ti-tag"></i></button>
         <button class="icon-btn" onclick="openEditTxn('${t.id}')"     title="Edit"><i class="ti ti-edit"></i></button>
@@ -556,9 +630,8 @@ function openEditTxn(id) {
 
 function populateTxnSelects(selCat = '', selAcc = '', selTo = '') {
   document.getElementById('txn-category').innerHTML = CATEGORIES.map(c => `<option value="${c.id}" ${c.id === selCat ? 'selected' : ''}>${c.label}</option>`).join('');
-  const accOpts = sel => accounts.map(a => `<option value="${a.name}" ${a.name === sel ? 'selected' : ''}>${a.name}</option>`).join('');
-  document.getElementById('txn-account').innerHTML    = accOpts(selAcc);
-  document.getElementById('txn-to-account').innerHTML = accOpts(selTo);
+  document.getElementById('txn-account').innerHTML    = groupedAccOpts(selAcc);
+  document.getElementById('txn-to-account').innerHTML = groupedAccOpts(selTo);
 }
 
 function setType(type) {
@@ -813,20 +886,31 @@ async function deleteAccount(id) {
 
 // ── Budgets ────────────────────────────────────────────────────────────────
 function renderBudgets() {
-  const txns    = getMonthTxns(currentMonth, currentYear).filter(t => t.type === 'out');
+  // Net spending per category: out transactions add, in transactions tagged with
+  // a spending category (i.e. not income) subtract — matching how Mint handled
+  // refunds and reimbursements. Transfers are excluded entirely.
   const spending = {};
-  txns.forEach(t => { spending[t.category] = (spending[t.category] || 0) + t.amount; });
+  getMonthTxns(currentMonth, currentYear).forEach(t => {
+    if (t.type === 'transfer') return;
+    if (t.type === 'out') {
+      spending[t.category] = (spending[t.category] || 0) + t.amount;
+    } else if (t.type === 'in' && t.category !== 'income') {
+      spending[t.category] = (spending[t.category] || 0) - t.amount;
+    }
+  });
   const budgetCats = CATEGORIES.filter(c => c.id !== 'income');
   document.getElementById('budget-bars').innerHTML = budgetCats.map(c => {
     const spent  = spending[c.id] || 0;
     const budget = budgets[c.id]  || 0;
     if (spent === 0 && budget === 0) return '';
-    const pct  = budget > 0 ? Math.min((spent / budget) * 100, 100) : 0;
-    const over = budget > 0 && spent > budget;
+    const netSpent = Math.max(spent, 0); // clamp: over-reimbursed shows as $0 used
+    const pct  = budget > 0 ? Math.min((netSpent / budget) * 100, 100) : 0;
+    const over = budget > 0 && netSpent > budget;
+    const spentLabel = spent < 0 ? `+${fmtShort(-spent)} back` : fmtShort(netSpent);
     return `<div class="budget-item">
       <div class="budget-header">
         <span class="budget-name">${c.label}</span>
-        <span class="budget-amounts">${fmtShort(spent)}${budget > 0 ? ' / ' + fmtShort(budget) : ''}</span>
+        <span class="budget-amounts">${spentLabel}${budget > 0 ? ' / ' + fmtShort(budget) : ''}</span>
       </div>
       <div class="budget-track"><div class="budget-fill" style="width:${pct}%;background:${over ? 'var(--red-400)' : c.color};"></div></div>
     </div>`;
@@ -838,7 +922,7 @@ function renderBudgets() {
       <input type="number" class="form-input" style="width:90px;padding:5px 8px;" placeholder="0" value="${budgets[c.id] || ''}" data-cat="${c.id}">
     </div>`).join('');
   const totalBudget = budgetCats.reduce((s, c) => s + (budgets[c.id] || 0), 0);
-  const totalSpent  = budgetCats.reduce((s, c) => s + (spending[c.id] || 0), 0);
+  const totalSpent  = budgetCats.reduce((s, c) => s + Math.max(spending[c.id] || 0, 0), 0);
   const totEl = document.getElementById('budget-total');
   if (totEl) totEl.innerHTML = `Spent <strong>${fmt(totalSpent)}</strong> of <strong>${fmt(totalBudget)}</strong> budgeted this month`;
 }
@@ -1215,9 +1299,8 @@ function renderRecurringList() {
 
 function populateRecurSelects(selCat = '', selAcc = '', selTo = '') {
   document.getElementById('recur-category').innerHTML = CATEGORIES.map(c => `<option value="${c.id}" ${c.id === selCat ? 'selected' : ''}>${c.label}</option>`).join('');
-  const opts = sel => accounts.map(a => `<option value="${a.name}" ${a.name === sel ? 'selected' : ''}>${a.name}</option>`).join('');
-  document.getElementById('recur-account').innerHTML    = opts(selAcc);
-  document.getElementById('recur-to-account').innerHTML = opts(selTo);
+  document.getElementById('recur-account').innerHTML    = groupedAccOpts(selAcc);
+  document.getElementById('recur-to-account').innerHTML = groupedAccOpts(selTo);
 }
 
 function setRecurType(type) {
@@ -1301,7 +1384,7 @@ async function deleteRecurring(id) {
 
 // ── Milestones CRUD ──────────────────────────────────────────────────────────
 function populateMilestoneAccounts(sel = '') {
-  document.getElementById('ms-account').innerHTML = accounts.map(a => `<option value="${a.name}" ${a.name === sel ? 'selected' : ''}>${a.name}${a.isLiability ? ' (debt)' : ''}</option>`).join('');
+  document.getElementById('ms-account').innerHTML = groupedAccOpts(sel, a => a.isLiability ? ' (debt)' : '');
 }
 
 function openAddMilestone() {
