@@ -1473,6 +1473,277 @@ function exportProjectionCSV() {
   showToast(rows.length ? `${rows.length} projected rows exported` : 'No recurring entries fall in that month', rows.length ? 'success' : 'error');
 }
 
+// ── Financial Snapshot Export ──────────────────────────────────────────────
+// Generates a formatted HTML document modelled on the Financial Overview.
+function exportSnapshot() {
+  const today = todayStr();
+  const esc   = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const H     = []; // HTML parts — joined at the end
+  const add   = s => H.push(s);
+
+  // ── Pre-compute ────────────────────────────────────────────────────────────
+  const assetGrps  = ['liquid','registered','other-asset'];
+  const liabGrps   = ['loc','credit-card','other-liability'];
+  const totalAssets = accounts.filter(a => !a.isLiability).reduce((s,a) => s + accountBalance(a), 0);
+  const totalDebt   = accounts.filter(a =>  a.isLiability).reduce((s,a) => s + accountBalance(a), 0);
+  const netWorth    = totalAssets - totalDebt;
+  const assetPct    = totalAssets + totalDebt > 0 ? (totalAssets / (totalAssets + totalDebt) * 100).toFixed(1) : 50;
+
+  const monthTxns = getMonthTxns(currentMonth, currentYear);
+  const spending  = {};
+  monthTxns.forEach(t => {
+    if (t.type === 'transfer') return;
+    if (t.type === 'out') spending[t.category] = (spending[t.category] || 0) + t.amount;
+    else if (t.type === 'in' && t.category !== 'income') spending[t.category] = (spending[t.category] || 0) - t.amount;
+  });
+  const budgetCats = CATEGORIES.filter(c => c.id !== 'income');
+
+  const debtWithRate = accounts
+    .filter(a => a.isLiability && monthlyRate(a) > 0)
+    .map(a => ({ a, bal: accountBalance(a), mr: monthlyRate(a) }))
+    .filter(x => x.bal > 0.005)
+    .sort((x, y) => y.mr - x.mr);
+
+  const bills = accounts
+    .filter(a => a.isLiability && a.dueDay)
+    .map(a => ({ a, nd: nextDueDate(a.dueDay), bdays: businessDaysUntil(nextDueDate(a.dueDay)) }))
+    .sort((x, y) => x.nd - y.nd);
+
+  const dateLabel = new Date(today + 'T12:00:00').toLocaleDateString('en-CA', { month: 'long', day: 'numeric', year: 'numeric' });
+
+  // ── HTML helpers ───────────────────────────────────────────────────────────
+  const secHead = (title, bg) =>
+    `<div class="sec-head" style="background:${bg};"><span>${esc(title)}</span></div>`;
+  const th = (...cols) =>
+    `<thead><tr>${cols.map(c => `<th${c.r ? ' class="r"' : ''}>${esc(c.t ?? c)}</th>`).join('')}</tr></thead>`;
+  const altRow = (i, cells) =>
+    `<tr class="${i%2===1?'alt':''}"><td>${cells.join('</td><td>')}</td></tr>`;
+  const totalRow = cells =>
+    `<tr class="tot"><td>${cells.join('</td><td>')}</td></tr>`;
+  const grpRow = (label, span) =>
+    `<tr class="grp"><td colspan="${span}">${esc(label)}</td></tr>`;
+  const money = (n, cls='') => `<span class="${cls}">${fmt(n)}</span>`;
+  const pill  = (text, color) =>
+    `<span style="display:inline-block;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:700;text-transform:uppercase;background:${color}22;color:${color};">${esc(text)}</span>`;
+
+  // ── CSS ────────────────────────────────────────────────────────────────────
+  add(`<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Financial Snapshot — ${esc(today)}</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;color:#1a1a2e;background:#f0f1f8;padding:32px 20px;}
+.page{max-width:980px;margin:0 auto;}
+/* Header */
+.doc-head{background:linear-gradient(135deg,#534AB7 0%,#7F77DD 100%);border-radius:12px;padding:28px 32px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:flex-end;}
+.doc-head h1{font-size:22px;font-weight:800;color:#fff;letter-spacing:-0.02em;}
+.doc-head .sub{font-size:12px;color:rgba(255,255,255,0.65);margin-top:3px;}
+.doc-head .dt{font-size:12px;color:rgba(255,255,255,0.65);text-align:right;}
+/* Hero cards */
+.hero{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:14px;}
+.hcard{background:#fff;border-radius:10px;padding:18px 22px;box-shadow:0 1px 4px rgba(0,0,0,.07);}
+.hcard .lbl{font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:.07em;font-weight:700;margin-bottom:6px;}
+.hcard .amt{font-size:22px;font-weight:800;letter-spacing:-0.02em;}
+.hcard .pos{color:#1D9E75;} .hcard .neg{color:#DC2626;} .hcard .ind{color:#534AB7;}
+/* Bar */
+.nw-bar{background:#fff;border-radius:10px;padding:14px 22px;margin-bottom:20px;box-shadow:0 1px 4px rgba(0,0,0,.07);}
+.nw-bar-meta{display:flex;justify-content:space-between;font-size:11px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:.04em;margin-bottom:8px;}
+.nw-bar-track{height:9px;border-radius:5px;background:#fee2e2;overflow:hidden;}
+.nw-bar-fill{height:100%;background:#1D9E75;border-radius:5px;}
+.nw-bar-labels{display:flex;justify-content:space-between;font-size:11px;margin-top:6px;}
+.nw-bar-labels .a{color:#1D9E75;font-weight:600;} .nw-bar-labels .l{color:#DC2626;font-weight:600;}
+/* Sections */
+.sec{background:#fff;border-radius:10px;margin-bottom:20px;overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.07);}
+.sec-head{padding:10px 18px;}
+.sec-head span{font-size:11px;font-weight:700;color:#fff;text-transform:uppercase;letter-spacing:.07em;}
+/* Tables */
+table{width:100%;border-collapse:collapse;}
+th{background:#f0f1f9;font-size:10px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;padding:8px 16px;border-bottom:1px solid #e5e7eb;white-space:nowrap;}
+th.r,td.r{text-align:right;}
+td{padding:9px 16px;border-bottom:1px solid #f3f4f6;font-size:12.5px;vertical-align:middle;}
+tr:last-child td{border-bottom:none;}
+tr.alt td{background:#fafafa;}
+tr.tot td{background:#f0f1f9;font-weight:700;border-top:2px solid #e2e5f0;}
+tr.grp td{background:#f8f8fc;color:#9ca3af;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;padding:5px 16px;}
+/* Utilities */
+.pos{color:#1D9E75;font-weight:600;} .neg{color:#DC2626;font-weight:600;}
+.amb{color:#D97706;font-weight:600;} .muted{color:#9ca3af;}
+.bold{font-weight:700;} .small{font-size:11px;}
+/* Budget bar */
+.bbar-wrap{background:#f3f4f6;border-radius:4px;height:6px;width:100px;}
+.bbar-fill{height:100%;border-radius:4px;}
+/* Footer */
+.footer{text-align:center;color:#9ca3af;font-size:11px;margin-top:28px;padding-top:14px;border-top:1px solid #e5e7eb;}
+@media print{
+  body{background:#fff;padding:0;}
+  .sec,.hcard,.nw-bar{box-shadow:none;border:1px solid #e5e7eb;}
+  .doc-head{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+}
+</style></head><body><div class="page">`);
+
+  // ── Header ─────────────────────────────────────────────────────────────────
+  add(`<div class="doc-head">
+  <div><div class="sub">MO-Mint</div><h1>Financial Snapshot</h1></div>
+  <div class="dt">Generated ${esc(dateLabel)}</div>
+</div>`);
+
+  // ── Net worth hero ─────────────────────────────────────────────────────────
+  add(`<div class="hero">
+  <div class="hcard"><div class="lbl">Total Assets</div><div class="amt pos">${fmt(totalAssets)}</div></div>
+  <div class="hcard"><div class="lbl">Total Debt</div><div class="amt neg">${fmt(totalDebt)}</div></div>
+  <div class="hcard"><div class="lbl">Net Worth</div><div class="amt ${netWorth >= 0 ? 'ind' : 'neg'}">${fmt(netWorth)}</div></div>
+</div>
+<div class="nw-bar">
+  <div class="nw-bar-meta"><span>Assets vs. Liabilities</span><span>${assetPct}% assets</span></div>
+  <div class="nw-bar-track"><div class="nw-bar-fill" style="width:${assetPct}%;"></div></div>
+  <div class="nw-bar-labels"><span class="a">${fmt(totalAssets)} assets</span><span class="l">${fmt(totalDebt)} debt</span></div>
+</div>`);
+
+  // ── Net worth summary table ────────────────────────────────────────────────
+  add(`<div class="sec">${secHead('Net Worth Summary','#534AB7')}<table>`);
+  add(th('Category',{t:'Amount',r:true}));
+  add('<tbody>');
+  assetGrps.forEach(g => {
+    const accs = accounts.filter(a => !a.isLiability && a.group === g);
+    if (!accs.length) return;
+    const tot = accs.reduce((s,a) => s + accountBalance(a), 0);
+    add(`<tr><td>${esc(GROUP_LABELS[g]||g)}</td><td class="r pos">${fmt(tot)}</td></tr>`);
+  });
+  add(`<tr class="tot"><td class="bold">Total Assets</td><td class="r pos">${fmt(totalAssets)}</td></tr>`);
+  add(`<tr><td colspan="2" style="padding:3px;background:#f9fafb;border-bottom:1px solid #e5e7eb;"></td></tr>`);
+  liabGrps.forEach(g => {
+    const accs = accounts.filter(a => a.isLiability && a.group === g);
+    if (!accs.length) return;
+    const tot = accs.reduce((s,a) => s + accountBalance(a), 0);
+    add(`<tr><td>${esc(GROUP_LABELS[g]||g)}</td><td class="r neg">${fmt(tot)}</td></tr>`);
+  });
+  add(`<tr class="tot"><td class="bold">Total Debt</td><td class="r neg">${fmt(totalDebt)}</td></tr>`);
+  add(`<tr class="tot" style="border-top:2px solid #534AB7;"><td class="bold">Net Worth</td><td class="r bold" style="color:${netWorth>=0?'#534AB7':'#DC2626'};">${fmt(netWorth)}</td></tr>`);
+  add('</tbody></table></div>');
+
+  // ── Assets ─────────────────────────────────────────────────────────────────
+  add(`<div class="sec">${secHead('Assets','#1D9E75')}<table>`);
+  add(th('Account','Group',{t:'Balance',r:true},'Rate','Notes'));
+  add('<tbody>');
+  assetGrps.forEach(g => {
+    const accs = accounts.filter(a => !a.isLiability && a.group === g)
+      .sort((a,b) => (a.sortOrder??9999)-(b.sortOrder??9999));
+    if (!accs.length) return;
+    add(grpRow(GROUP_LABELS[g]||g, 5));
+    accs.forEach((a,i) => {
+      const bal = accountBalance(a);
+      add(altRow(i,[`<span class="bold">${esc(a.name)}</span>`,`<span class="muted small">${esc(GROUP_LABELS[a.group]||a.group)}</span>`,`<span class="r pos" style="display:block;">${fmt(bal)}</span>`,esc(a.rate||'—'),`<span class="muted small">${esc(a.notes||'')}</span>`]));
+    });
+    const tot = accs.reduce((s,a) => s + accountBalance(a), 0);
+    add(totalRow([`<span>Subtotal — ${esc(GROUP_LABELS[g]||g)}</span>`,'',`<span class="r pos" style="display:block;">${fmt(tot)}</span>`,'','']));
+  });
+  add('</tbody></table></div>');
+
+  // ── Liabilities ────────────────────────────────────────────────────────────
+  add(`<div class="sec">${secHead('Liabilities','#DC2626')}<table>`);
+  add(th('Account',{t:'Balance',r:true},'Rate','Due Day','Notes'));
+  add('<tbody>');
+  liabGrps.forEach(g => {
+    const accs = accounts.filter(a => a.isLiability && a.group === g)
+      .sort((a,b) => (a.sortOrder??9999)-(b.sortOrder??9999));
+    if (!accs.length) return;
+    add(grpRow(GROUP_LABELS[g]||g, 5));
+    accs.forEach((a,i) => {
+      const bal = accountBalance(a);
+      const dueStr = a.dueDay ? `${a.dueDay}th` : '<span class="muted">—</span>';
+      add(altRow(i,[`<span class="bold">${esc(a.name)}</span>`,`<span class="r neg" style="display:block;">${fmt(bal)}</span>`,esc(a.rate||'—'),dueStr,`<span class="muted small">${esc(a.notes||'')}</span>`]));
+    });
+    const tot = accs.reduce((s,a) => s + accountBalance(a), 0);
+    add(totalRow([`Subtotal — ${esc(GROUP_LABELS[g]||g)}`,`<span class="r neg" style="display:block;">${fmt(tot)}</span>`,'','','']));
+  });
+  add('</tbody></table></div>');
+
+  // ── Debt by interest rate ──────────────────────────────────────────────────
+  if (debtWithRate.length) {
+    add(`<div class="sec">${secHead('Debt by Interest Rate — Highest First','#7F77DD')}<table>`);
+    add(th('Account',{t:'Balance',r:true},{t:'Rate',r:true},{t:'Annual Interest Cost (est.)',r:true}));
+    add('<tbody>');
+    let tbBal=0, tbWeighted=0, tbInterest=0;
+    debtWithRate.forEach(({a,bal,mr},i) => {
+      const annual = bal * mr * 12;
+      tbBal += bal; tbWeighted += bal*mr*12; tbInterest += annual;
+      add(altRow(i,[`<span class="bold">${esc(a.name)}</span>`,`<span class="r neg" style="display:block;">${fmt(bal)}</span>`,`<span class="r amb" style="display:block;">${esc(a.rate||'')}</span>`,`<span class="r muted" style="display:block;">${fmt(annual)}</span>`]));
+    });
+    const blended = tbBal > 0 ? ((tbWeighted/tbBal)*100).toFixed(2)+'%' : '—';
+    add(totalRow(['Total',`<span class="r neg" style="display:block;">${fmt(tbBal)}</span>`,`<span class="r amb" style="display:block;">${esc(blended)}</span>`,`<span class="r" style="display:block;">${fmt(tbInterest)}</span>`]));
+    add('</tbody></table></div>');
+  }
+
+  // ── Upcoming bills ─────────────────────────────────────────────────────────
+  if (bills.length) {
+    add(`<div class="sec">${secHead('Upcoming Bills','#D97706')}<table>`);
+    add(th('Account',{t:'Balance',r:true},'Due Day','Due Date','Business Days'));
+    add('<tbody>');
+    bills.forEach(({a,nd,bdays},i) => {
+      const bal    = accountBalance(a);
+      const urgCls = bdays<=5 ? 'neg' : bdays<=10 ? 'amb' : 'muted';
+      const when   = bdays===0 ? 'Today' : `${bdays} day${bdays===1?'':'s'}`;
+      add(altRow(i,[`<span class="bold">${esc(a.name)}</span>`,`<span class="r neg" style="display:block;">${bal>0.005?fmt(bal):'<span class="muted">—</span>'}</span>`,`${a.dueDay}th`,nd.toLocaleDateString('en-CA',{month:'short',day:'numeric'}),`<span class="${urgCls}">${when}</span>`]));
+    });
+    add('</tbody></table></div>');
+  }
+
+  // ── Monthly budget ─────────────────────────────────────────────────────────
+  const anyBudgetData = budgetCats.some(c => (budgets[c.id]||0) > 0 || spending[c.id]);
+  if (anyBudgetData) {
+    add(`<div class="sec">${secHead('Monthly Budget — '+monthName(currentMonth,currentYear),'#1D9E75')}<table>`);
+    add(th('Category',{t:'Budget',r:true},{t:'Spent',r:true},{t:'Remaining',r:true},'Progress'));
+    add('<tbody>');
+    let tBudget=0, tSpent=0;
+    budgetCats.forEach((c,i) => {
+      const spent  = Math.max(spending[c.id]||0, 0);
+      const budget = budgets[c.id]||0;
+      if (spent===0 && budget===0) return;
+      const over = budget>0 && spent>budget;
+      const pct  = budget>0 ? Math.min((spent/budget)*100,100).toFixed(0) : 0;
+      const rem  = budget>0 ? budget-spent : null;
+      tBudget += budget; tSpent += spent;
+      const remStr = rem!==null ? `<span class="${rem<0?'neg':'pos'}">${fmt(rem)}</span>` : '<span class="muted">—</span>';
+      const barHtml = budget>0 ? `<div class="bbar-wrap"><div class="bbar-fill" style="width:${pct}%;background:${over?'#DC2626':c.color};"></div></div>` : '';
+      add(altRow(i,[esc(c.label),`<span class="r muted" style="display:block;">${budget>0?fmt(budget):'—'}</span>`,`<span class="r${over?' neg':''}" style="display:block;">${fmt(spent)}</span>`,`<span class="r" style="display:block;">${remStr}</span>`,barHtml]));
+    });
+    const tRem = tBudget - tSpent;
+    add(totalRow(['Total',`<span class="r" style="display:block;">${fmt(tBudget)}</span>`,`<span class="r${tSpent>tBudget?' neg':''}" style="display:block;">${fmt(tSpent)}</span>`,`<span class="r ${tRem<0?'neg':'pos'}" style="display:block;">${fmt(tRem)}</span>`,'']));
+    add('</tbody></table></div>');
+  }
+
+  // ── Recurring entries ──────────────────────────────────────────────────────
+  if (recurring.length) {
+    const typeColors = { in:'#1D9E75', out:'#DC2626', transfer:'#7F77DD' };
+    add(`<div class="sec">${secHead('Recurring Entries','#534AB7')}<table>`);
+    add(th('Label','Type',{t:'Amount',r:true},'Frequency','Account'));
+    add('<tbody>');
+    recurring.slice()
+      .sort((a,b) => ({in:0,out:1,transfer:2}[a.type]??3) - ({in:0,out:1,transfer:2}[b.type]??3) || (b.amount||0)-(a.amount||0))
+      .forEach((r,i) => {
+        const color = typeColors[r.type]||'#6b7280';
+        const acct  = r.type==='transfer'
+          ? `<span class="muted small">${esc(r.account||'')} → ${esc(r.toAccount||'')}</span>`
+          : `<span class="muted small">${esc(r.account||'')}</span>`;
+        const sign = r.type==='in' ? '+' : r.type==='out' ? '−' : '';
+        add(altRow(i,[`<span class="bold">${esc(r.label)}</span>`,pill(r.type,color),`<span class="r bold" style="color:${color};display:block;">${sign}${fmt(r.amount||0)}</span>`,`<span class="muted small">${esc(FREQ_LABELS[r.frequency]||r.frequency||'')}</span>`,acct]));
+      });
+    add('</tbody></table></div>');
+  }
+
+  // ── Footer ─────────────────────────────────────────────────────────────────
+  add(`<div class="footer">Generated by MO-Mint &nbsp;·&nbsp; ${esc(dateLabel)}</div></div></body></html>`);
+
+  // ── Download ───────────────────────────────────────────────────────────────
+  const blob = new Blob([H.join('\n')], { type: 'text/html' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = `mo-mint-snapshot-${today}.html`; a.click();
+  URL.revokeObjectURL(url);
+  showToast('Financial snapshot exported');
+}
+
 // ── CSV Import ─────────────────────────────────────────────────────────────
 function parseCSV(text) {
   const lines = text.trim().split('\n');
@@ -1611,6 +1882,7 @@ window.openEditMilestone  = openEditMilestone;
 window.saveMilestone      = saveMilestone;
 window.deleteMilestone    = deleteMilestone;
 window.exportProjectionCSV = exportProjectionCSV;
+window.exportSnapshot      = exportSnapshot;
 window.toggleBudgetForecast = toggleBudgetForecast;
 window.saveBudgetForecastAccount = saveBudgetForecastAccount;
 window.closeModal         = closeModal;
